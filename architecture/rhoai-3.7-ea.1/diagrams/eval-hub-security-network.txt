@@ -1,0 +1,149 @@
+eval-hub Security Network Diagram (RHOAI 3.7-ea.1)
+Source: architecture/rhoai-3.7-ea.1/eval-hub.md (eval-hub 1.0.4, commit 29ec89a)
+Image: quay.io/rhoai/odh-eval-hub-rhel9 (single image: eval-hub, eval-runtime-sidecar,
+       eval-runtime-init, evalhub-mcp)
+
+NOTE: eval-hub ships no Service/Route/RBAC manifests. The trustyai-service-operator
+creates them. Proxy ports below (8443) are operator-defined and are not set in this repo.
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  CLIENTS (Untrusted until authenticated by kube-rbac-proxy)                  │
+│                                                                              │
+│  [eval-hub-sdk / RHOAI Dashboard]          [AI assistant -> evalhub-mcp]     │
+│         │                                         │                          │
+│         │ Port: 8443/TCP (operator-defined)       │ stdio, or 3001/TCP HTTP  │
+│         │ Protocol: HTTPS                         │ Auth: none (default) or  │
+│         │ Encryption: TLS (terminated at proxy)   │   rbac-proxy header trust│
+│         │ Auth: Bearer token (TokenReview + SAR)  │ evalhub-mcp then calls   │
+│         ▼                                         │   API w/ EVALHUB_TOKEN   │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  EVAL-HUB POD (operator-managed namespace)                                   │
+│                                                                              │
+│  [kube-rbac-proxy]  (sidecar, same pod)                                      │
+│  - Authenticates caller, authorizes via SubjectAccessReview                  │
+│  - Sets X-Tenant (namespace) and X-User headers                              │
+│  - MUST strip client-supplied identity headers                               │
+│         │                                                                    │
+│         │ Port: 8080/TCP (bind 127.0.0.1 by default)                         │
+│         │ Protocol: HTTP                                                     │
+│         │ Encryption: None (pod-local); optional native TLS 1.2+             │
+│         │ Auth: X-Tenant + X-User header trust (presence check only,         │
+│         │       server.go:512; skipped entirely with --local)                │
+│         ▼                                                                    │
+│  [eval-hub API server]  /app/eval-hub, non-root UID 1000                     │
+│  - Routes: /api/v1/evaluations/{jobs,post-processing,collections,providers}  │
+│  - Unauthenticated: /api/v1/health, /openapi.yaml, /docs                     │
+│                                                                              │
+│  [Metrics listener]  0.0.0.0:8081/TCP HTTP, NO TLS, NO AUTH                  │
+│  - Bypasses kube-rbac-proxy by design; /metrics only                         │
+│         ▲                                                                    │
+│         │ 8081/TCP HTTP plaintext, no auth  <── [Prometheus]                 │
+└─────────┼────────────────────────────────────────────────────────────────────┘
+          │
+          │ Egress from eval-hub API:
+          │  - Kubernetes API   6443/TCP HTTPS TLS 1.2+   ServiceAccount token
+          │  - PostgreSQL       5432/TCP PG wire, sslmode per DSN, DB password
+          │                     (SQLite in-memory is the default)
+          │  - MLflow           HTTPS, custom CA (MLFLOW_CA_CERT_PATH),
+          │                     Bearer token file (MLFLOW_TOKEN_PATH)
+          │  - OTLP collector   4317/TCP gRPC (or 4318 HTTP), TLS unless
+          │                     exporter_insecure, no auth
+          │  - OCI registry     443/TCP HTTPS, registry token
+          ▼
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  KUBERNETES API (6443/TCP HTTPS)                                             │
+│  eval-hub creates per evaluation, in namespace = X-Tenant:                   │
+│   ConfigMap (job spec + sidecar_config.json), reference Secret,             │
+│   NetworkPolicy (ingress deny), batch/v1 Job (Kueue labels, HardwareProfile) │
+└─────────┬────────────────────────────────────────────────────────────────────┘
+          ▼
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  TENANT NAMESPACE - Evaluation Job Pod                                       │
+│  automountServiceAccountToken: false  (adapter has no K8s API credential)    │
+│  NetworkPolicy: deny all peer-pod INGRESS; EGRESS NOT RESTRICTED (known gap) │
+│                                                                              │
+│  [eval-runtime-init]  (init container)                                       │
+│         │ 443/TCP HTTPS TLS                                                  │
+│         │ S3: AWS access keys (Secret)                                       │
+│         │ Git: basic auth (optional; stripped on cross-host redirect)        │
+│         │ Hugging Face: HF token (optional)                                  │
+│         ▼  stages test data to shared volume                                 │
+│                                                                              │
+│  [Adapter container]  (provider image: lm-eval, garak, ragas, ...)           │
+│  - Sees placeholder credentials only (reference Secret)                      │
+│         │                                                                    │
+│         │ Port: 8080/TCP localhost                                           │
+│         │ Protocol: HTTP                                                     │
+│         │ Encryption: None (pod-local)                                       │
+│         │ Auth: None (credentials injected on egress)                        │
+│         ▼                                                                    │
+│  [eval-runtime-sidecar]  (native sidecar / restartable init container)       │
+│  - Resolves placeholders, injects Bearer/OCI tokens and model credentials    │
+│         │                                                                    │
+│         ├─► eval-hub API via kube-rbac-proxy: HTTPS (operator port),         │
+│         │   TLS w/ service-ca trust (EVALHUB_CA_CERT_PATH), Bearer token     │
+│         │   (file, cached 5m). POST /api/v1/evaluations/jobs/{id}/events     │
+│         ├─► MLflow: HTTPS, TLS custom CA, Bearer token (cached 5m)           │
+│         ├─► OCI registry: 443/TCP HTTPS, TLS, OCI token                      │
+│         └─► Model / judge endpoints: HTTP/HTTPS (configured), TLS per        │
+│             endpoint (custom CA; optional InsecureSkipVerify), model creds   │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                           │
+│  [S3-compatible storage] [Git server] [Hugging Face Hub] [OCI registry]      │
+│  [Model / judge inference endpoints] [MLflow (RHOAI)]                        │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+Listener Summary:
+- 8080/TCP  eval-hub API         HTTP (opt. TLS 1.2+)  header trust    127.0.0.1 default
+- 8081/TCP  eval-hub metrics     HTTP                  none            0.0.0.0
+- 8080/TCP  eval-runtime-sidecar HTTP                  none            pod-local
+- 3001/TCP  evalhub-mcp (http)   HTTP/HTTPS opt. TLS   none/rbac-proxy optional
+- 8443/TCP  kube-rbac-proxy      HTTPS                 Bearer+SAR      operator-defined
+
+RBAC Summary (inferred from internal/eval_hub/runtimes/k8s/k8s_helper.go;
+granted by operator via RoleBindings in tenant namespaces; no manifests in repo):
+- batch / jobs                                   create, get, list, delete, patch
+- "" / configmaps, secrets                       create, get, list, delete, update
+- "" / pods, pods/log                            list, get
+- "" , events.k8s.io / events                    create
+- networking.k8s.io / networkpolicies            create, get, update (GC via owner refs)
+- infrastructure.opendatahub.io / hardwareprofiles  get, list, delete
+- kueue.x-k8s.io / localqueues                   list
+
+Service Mesh Configuration:
+- None. No PeerAuthentication or AuthorizationPolicy. Transport security is
+  kube-rbac-proxy TLS plus optional native TLS on the API and MCP listeners.
+
+Secrets:
+- Per-job model reference Secret (Opaque) - rewritten creds, created by eval-hub,
+  owned by Job, job lifetime, no rotation
+- User model credential Secret (Opaque) - user-provided, referenced by job request
+- S3 / test-data Secret (Opaque) - AWS keys for init container, user-provided
+- DB password (mounted file via secrets.mappings) - operator/user, no rotation
+- MLflow / eval-hub token files (projected SA token) - Kubernetes, auto-rotated
+- API serving cert (kubernetes.io/tls, optional) - TLS_CERT_FILE/TLS_KEY_FILE,
+  operator / service-ca, auto-rotated if service-ca
+
+Crypto / FIPS:
+- Build: CGO_ENABLED=1 GOEXPERIMENT=strictfipsruntime, dynamic OpenSSL
+- Runtime base: ubi9/ubi-minimal-pqc (digest-pinned)
+- TLS: min 1.2 (1.3 via TLS_MIN_VERSION), configurable ciphers/curves incl.
+  PQC hybrids X25519MLKEM768, SecP256r1MLKEM768, SecP384r1MLKEM1024
+- Risks: optional InsecureSkipVerify in sidecar (default false), OTLP
+  exporter_insecure plaintext, X25519 selectable (not FIPS-approved)
+
+Multi-Tenancy:
+- Tenant = namespace (X-Tenant). Scopes all SQL queries and the Job namespace.
+- Shared SQL DB, tenant-column filtering (application-enforced).
+- Tenant-membership authorization is NOT checked by eval-hub; it relies on
+  kube-rbac-proxy SAR config and operator RoleBindings.
+
+Security Observations:
+1. API security rests on kube-rbac-proxy being the only path to 127.0.0.1:8080
+   and on the proxy stripping client-supplied X-Tenant / X-User headers.
+2. --local mode disables identity header checks entirely.
+3. Metrics listener (0.0.0.0:8081) is unauthenticated plaintext.
+4. evalhub-mcp defaults to auth_type: none when run in HTTP mode.
+5. Job pod egress is unrestricted (documented in docs/network-policies.md).
+6. One image serves four roles, so a CVE in any binary's dependencies affects
+   job pods as well as the API server.

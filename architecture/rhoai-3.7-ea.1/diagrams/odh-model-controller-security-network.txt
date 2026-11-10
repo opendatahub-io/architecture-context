@@ -1,0 +1,147 @@
+odh-model-controller - Security Network Diagram (RHOAI 3.7-ea.1)
+Source: architecture/rhoai-3.7-ea.1/odh-model-controller.md  (commit 8299cb8, branch rhoai-3.7-ea.1)
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                        │
+│                                                                              │
+│  [External Client]                                                           │
+│         │                                     │                              │
+│         │ Port: 443/TCP                       │ Port: 443/TCP                │
+│         │ Protocol: HTTPS                     │ Protocol: HTTPS              │
+│         │ Encryption: TLS                     │ Encryption: TLS              │
+│         │ Auth: Bearer token                  │ Auth: Bearer (AuthPolicy)    │
+│         ▼                                     ▼                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (resources created dynamically by odh-model-controller)             │
+│                                                                              │
+│  [OpenShift Route <isvc-name>]           [Gateway API Gateway (Envoy)]       │
+│  - Created by KserveRawRouteReconciler   - EnvoyFilter + Kuadrant AuthPolicy │
+│  - TLS: Reencrypt (kube-rbac-proxy         created by GatewayReconciler /    │
+│    predictor) or Edge                      LLMISVC reconciler                │
+│  - HTTP→HTTPS redirect                   - AuthN/Z: Authorino                │
+│  - Max 3 canaries (alternateBackends)                                        │
+│         │ TLS reencrypt                           │ HTTPS                    │
+│         ▼                                         ▼                          │
+│  [ISVC Predictor + kube-rbac-proxy]      [llm-d EPP / vLLM]                  │
+│  - Namespace: {user-namespace}           - Namespace: {user-namespace}       │
+│  - per-ISVC SA + ClusterRoleBinding      - Grid NetworkPolicies/Roles        │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  CLUSTER CONTROL PLANE                                                       │
+│                                                                              │
+│  [kube-apiserver] 6443/TCP HTTPS TLS 1.2+                                    │
+│         │                                                                    │
+│         │ Admission calls (10 webhooks, all failurePolicy: Fail)             │
+│         │ Port: Service 443/TCP → 9443/TCP                                   │
+│         │ Protocol: HTTPS                                                    │
+│         │ Encryption: TLS (cluster APIServer TLS profile; service-ca cert)   │
+│         │ Auth: kube-apiserver admission (server cert)                       │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  NAMESPACE: opendatahub (controller namespace)                               │
+│                                                                              │
+│  [odh-model-controller manager pod]                                          │
+│  - ServiceAccount: odh-model-controller                                      │
+│  - Image: quay.io/rhoai/odh-model-controller-rhel9 (UID 2000)                │
+│  - NetworkPolicy: ingress [{}]  (ALLOW ALL - protection is TLS + authn only) │
+│  - Listeners:                                                                │
+│      9443/TCP HTTPS  webhooks       cluster TLS profile    admission         │
+│      8443/TCP HTTPS  /metrics       cluster TLS profile    TokenReview + SAR │
+│      8081/TCP HTTP   /healthz,/readyz  plaintext           NONE              │
+│                                                                              │
+│  [model-serving-api pod]                                                     │
+│  - ServiceAccount: model-serving-api                                         │
+│  - Image: quay.io/rhoai/odh-model-serving-api-rhel9 (UID 1000)               │
+│  - Listeners:                                                                │
+│      8443/TCP HTTPS  /api/v1/gateways      TLS 1.2+   Bearer + SSAR as user  │
+│      8443/TCP HTTPS  /api/v1/samples/llm-d TLS 1.2+   NONE (static content)  │
+│      8443/TCP HTTPS  /healthz,/readyz      TLS 1.2+   NONE                   │
+│      8080/TCP HTTPS  /metrics              TLS 1.2+   NONE established       │
+│  - Middleware only extracts Bearer; validation happens via SSAR failure      │
+│                                                                              │
+│  Inbound to this namespace:                                                  │
+│    RHOAI Dashboard backend ──HTTPS 443→8443, TLS 1.2+, user Bearer──▶ API    │
+│    Prometheus ──HTTPS 8443, Bearer + SAR (metrics-reader)──▶ manager         │
+│    Prometheus ──HTTPS 8080, no auth──▶ model-serving-api (ServiceMonitor)    │
+│         │                                                                    │
+│         │ Egress (both pods)                                                 │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  EGRESS                                                                      │
+│                                                                              │
+│  manager → kube-apiserver        6443/TCP HTTPS TLS 1.2+  SA token           │
+│  API     → kube-apiserver        6443/TCP HTTPS TLS 1.2+  SA token (list     │
+│                                  Gateways) + user token (SSAR per namespace) │
+│  manager → api.ngc.nvidia.com,   443/TCP HTTPS TLS (system trust)            │
+│            authn.nvidia.com               NGC API key (Bearer)               │
+│  manager → nvcr.io               443/TCP HTTPS TLS                           │
+│                                  Basic $oauthtoken:<key> → registry token    │
+│            (disable with NIM_STATE=removed for disconnected installs)        │
+│  manager → Model Registry        runtime port HTTPS TLS  Bearer (SA token)   │
+│            (optional, MODELREGISTRY_STATE=managed; MR_SKIP_TLS_VERIFY=false) │
+│  API     → OTel Collector        OTLP/gRPC  runtime-configured (optional)    │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+Services:
+- odh-model-controller-webhook-service   ClusterIP 443/TCP → 9443  HTTPS  TLS (service-ca)  admission
+- odh-model-controller-metrics-service   ClusterIP 8443/TCP → 8443 HTTPS  TLS (service-ca)  TokenReview + SAR
+- model-serving-api                      ClusterIP 443/TCP → 8443  HTTPS  TLS 1.2+ (hot-reloaded)  Bearer + SSAR
+- model-serving-api                      ClusterIP 8080/TCP → 8080 HTTPS  TLS 1.2+  none
+
+Admission Webhooks (all failurePolicy: Fail, port 9443):
+- Mutating  core/v1 Pod CREATE (all pods; acts on RAY_USE_TLS)  - Ray TLS volumes + cert init container
+- Mutating  v1beta1 InferenceService CREATE/UPDATE              - ConnectionsAPI credential injection, HardwareProfile
+- Mutating  v1alpha1 InferenceGraph CREATE                       - defaulting
+- Mutating  v1alpha1 + v1alpha2 LLMInferenceService CREATE/UPDATE - ConnectionsAPI; may create ServiceAccounts
+- Validating v1beta1 InferenceService   - name length, protected namespace, canary ≤ 3, DRA
+- Validating v1alpha1 InferenceGraph    - step serviceUrl must be name.namespace for .svc hosts
+- Validating v1alpha1 + v1alpha2 LLMInferenceService - HardwareProfile DRA references
+- Validating nim.opendatahub.io/v1 Account - singleton per namespace
+- xKS mode: only the LLMInferenceService webhooks are registered
+
+RBAC Summary:
+- ClusterRole: odh-model-controller-role  (SA odh-model-controller, ClusterRoleBinding)
+  - core: configmaps, secrets, serviceaccounts, services        create,delete,get,list,patch,update,watch
+  - core: endpoints, namespaces, pods                            create,get,list,patch,update,watch
+  - rbac.authorization.k8s.io: clusterrolebindings, rolebindings, roles   full CRUD  (ESCALATION-CAPABLE)
+  - networking.k8s.io: networkpolicies                           full CRUD
+  - networking.istio.io: envoyfilters                            full CRUD
+  - kuadrant.io: authpolicies (+status)                          full CRUD; kuadrants get,list,watch
+  - keda.sh: triggerauthentications                              full CRUD
+  - monitoring.coreos.com: podmonitors, servicemonitors          full CRUD
+  - grid.praxis.fast: inferenceproviders                         full CRUD
+  - gateway.networking.k8s.io: gateways                          get,list,patch,update,watch; httproutes read
+  - serving.kserve.io: inferenceservices, llminferenceservices   get,list,patch,update,watch (+status/finalizers)
+  - serving.kserve.io: servingruntimes                           create,get,list,update,watch
+  - nim.opendatahub.io: accounts (+status, finalizers)           get,list,patch,update,watch
+  - read-only: DSC, DSCI, hardwareprofiles, authorinos, ingresses, metrics.k8s.io, resourceclaimtemplates
+- ClusterRole: model-serving-api  (SA model-serving-api)
+  - gateway.networking.k8s.io gateways: list; core namespaces: get; config.openshift.io apiservers: get,list,watch
+- ClusterRole: proxy-role / metrics-auth-role - tokenreviews create, subjectaccessreviews create
+- ClusterRole: metrics-reader - nonResourceURL /metrics get
+- ClusterRole: kserve-prometheus-k8s - endpoints, pods, services get,list,watch
+- ClusterRoles: account-editor-role / account-viewer-role (user-facing NIM Account access)
+- Role: leader-election-role (ns opendatahub) - configmaps, leases, events
+
+Secrets:
+- odh-model-controller-webhook-cert (kubernetes.io/tls) - webhook TLS, service-ca (cert-manager in xKS), auto-rotated
+- odh-model-controller-metrics-tls  (kubernetes.io/tls) - metrics TLS, service-ca, auto-rotated
+- model-serving-api-tls             (kubernetes.io/tls) - API/metrics TLS, service-ca, hot-reloaded (fsnotify)
+- Ray CA + per-pod Ray cert Secrets (kubernetes.io/tls) - self-signed RSA-4096 by controller, NO rotation
+- storage-config (Opaque, per namespace) - aggregated data-connection/S3 credentials, built by SecretReconciler
+- NGC API key Secret / NIM pull Secret (Opaque / dockerconfigjson, per namespace) - user / AccountReconciler, no rotation
+- KEDA Prometheus auth Secret / SA token - created by controller, rotation unknown
+
+TLS / FIPS:
+- Manager: cluster APIServer TLS profile on webhook + metrics (Mozilla Intermediate fallback, TLS 1.2); fail-fast on malformed profile
+- model-serving-api: TLS 1.2 min, ECDHE AES-GCM, curves X25519MLKEM768/P-256/P-384; cluster profile under StrictAllComponents
+- Both binaries restart on TLS profile change (ProfileWatcher / watchTLSPolicy)
+- Build: CGO_ENABLED=1 GOEXPERIMENT=strictfipsruntime, ubi-minimal-pqc runtime (OpenSSL), digest-pinned bases, hermetic gomod prefetch
+
+Key Security Observations:
+- Pod mutating webhook intercepts ALL Pod CREATEs with failurePolicy Fail: webhook availability affects cluster-wide pod scheduling
+- Controller pod NetworkPolicy allows all ingress; 8081 probes are plaintext and unauthenticated
+- model-serving-api /metrics (8080) and /api/v1/samples/llm-d have no authentication
+- ConnectionsAPI webhooks read user-namespace Secrets with controller privileges; namespace scoping enforced in code, not RBAC
+- Controller can create ClusterRoleBindings/RoleBindings (per-ISVC auth delegation, Grid RBAC) - escalation-capable SA
+- Outbound NGC/nvcr.io calls matter for air-gapped installs; MR_SKIP_TLS_VERIFY can disable Model Registry cert verification
+- params.env on this branch references quay.io/opendatahub/*:odh-stable and quay.io/vllm/*:latest; RHOAI operator overrides with digest-pinned images

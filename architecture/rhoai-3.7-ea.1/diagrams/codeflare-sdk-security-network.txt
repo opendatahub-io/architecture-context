@@ -1,0 +1,146 @@
+codeflare-sdk (RHOAI 3.7-ea.1) - Security Network Diagram
+Source: architecture/rhoai-3.7-ea.1/codeflare-sdk.md   (v0.40.1, b622135)
+Deployment type: Client library. No in-cluster workload, no Service, no Ingress,
+no listening port, no service account. All calls use the END USER's identity.
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  USER PROCESS (Jupyter workbench pod or laptop) - trust = end-user identity │
+│                                                                             │
+│  [codeflare-sdk]  Codeflare facade, ray.cluster, ray.rayjobs, kueue, ...    │
+│    - Auth: kube-authkit (auto / token / OIDC / OpenShift OAuth /            │
+│      kubeconfig / in-cluster SA)                                            │
+│    - CA bundle: kubeconfig CA, CF_SDK_CA_CERT_PATH, or                      │
+│      /etc/pki/tls/custom-certs/ca-bundle.crt                                │
+│    - Local TLS dir: ~/.local/share/codeflare/tls/<cluster>-<ns>/            │
+│      {ca.crt, tls.crt, tls.key}  dir 0700 / files 0600, 30-day validity     │
+│    - No listening ports, no Service, no ServiceAccount                      │
+│         │                                                                   │
+│         │ (A) Kubernetes API                                                │
+│         │ Port: 6443/TCP (443 in-cluster)                                   │
+│         │ Protocol: HTTPS                                                   │
+│         │ Encryption: TLS, verify_ssl=True forced                           │
+│         │ Auth: Bearer token / OIDC / client cert (kube-authkit)            │
+│         ▼                                                                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  KUBERNETES CONTROL PLANE                                                   │
+│                                                                             │
+│  [Kubernetes / OpenShift API server]                                        │
+│    - Enforcement: Kubernetes RBAC (user's namespace permissions)            │
+│    - SDK operations:                                                        │
+│      * SSA/create/get/list/delete ray.io/v1 RayCluster, RayJob              │
+│      * get/list kueue.x-k8s.io LocalQueue, Workload, WorkloadPriorityClass  │
+│      * get Secret <cluster>-ca-secret-*  (INCLUDING CA PRIVATE KEY)         │
+│      * create Opaque Secret (RayJob files, ownerRef -> RayJob)              │
+│      * list HTTPRoute/Gateway (gateway.networking.k8s.io),                  │
+│        GatewayConfig (services.platform.opendatahub.io),                    │
+│        Route (route.openshift.io), Ingress                                  │
+│      * get DataScienceCluster, OperatorCondition (operators.coreos.com/v2)  │
+│    - 403 fallback probes namespaces: <own>, redhat-ods-applications,        │
+│      opendatahub, default, ray-system                                       │
+│                                                                             │
+│  From the SDK process (user zone), two more egress paths:                   │
+│         │                                                                   │
+│         │ (B) Ray dashboard - Ray Jobs REST API                             │
+│         │ Port: 443/TCP                                                     │
+│         │ Protocol: HTTPS                                                   │
+│         │ Encryption: TLS (verified on OpenShift unless verify_tls=False;   │
+│         │   non-OpenShift: Ray default verify and NO auth headers)          │
+│         │ Auth: Authorization: Bearer <user token> (OpenShift only)         │
+│         ▼                                                                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  PLATFORM INGRESS                                                           │
+│                                                                             │
+│  [Data-science Gateway]  https://<host>/ray/<ns>/<cluster>  (RHOAI 3.x)     │
+│    - AuthN: kube-auth-proxy (platform-enforced)                             │
+│  [Legacy Route / Ingress ray-dashboard-<name>]  (RHOAI 2.x fallback)        │
+│         │                                                                   │
+│         │ Port: 8265/TCP                                                    │
+│         │ Protocol: HTTP(S)                                                 │
+│         │ Encryption: platform-dependent                                    │
+│         │ Auth: gateway-enforced                                            │
+│         ▼                                                                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  TENANT NAMESPACE (Data Science Project)                                    │
+│                                                                             │
+│  [Ray Head pod]  (reconciled by KubeRay operator)                           │
+│    - 8265/TCP dashboard                                                     │
+│    - 10001/TCP Ray client (RAY_USE_TLS)                                     │
+│         ▲                                                                   │
+│         │ (C) Ray client, direct from SDK process                           │
+│         │ ray://<cluster>-head-svc.<ns>.svc:10001 (or Route/Ingress domain) │
+│         │ Port: 10001/TCP                                                   │
+│         │ Protocol: gRPC (Ray client)                                       │
+│         │ Encryption: mTLS                                                  │
+│         │ Auth: client cert minted by SDK, signed by cluster CA             │
+│                                                                             │
+│  [RayJob submitter pod]                                                     │
+│    - Mounts RayJob file Secret                                              │
+│    - Submits to Ray head 8265/TCP HTTP (in-cluster)                         │
+│                                                                             │
+│  [Secret <cluster>-ca-secret-*]  label ray.openshift.ai/cluster-name        │
+│  [Secret <rayjob> files]  Opaque, ownerRef controller=true                  │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (build / install time only - NOT called at runtime)               │
+│                                                                             │
+│  [PyPI]  443/TCP HTTPS TLS - package distribution                           │
+│  [quay.io/modh/ray]  digest-pinned default Ray runtime images               │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+Trust Boundary Notes:
+- The SDK adds no privilege; security posture == user's RBAC in the namespace.
+- Ray mTLS trust boundary == namespace Secret-read RBAC: any user who can read
+  Secrets in the namespace can read the CA private key and mint client certs
+  trusted by that Ray cluster.
+- SDK sets enableIngress: false on the RayCluster head; dashboard exposure is
+  left to KubeRay + RHOAI networking.
+- Opt-outs that weaken TLS: deprecated TokenAuthentication(skip_tls=True)
+  (silences urllib3 warnings), verify_tls=False for dashboard, migration script
+  suppresses InsecureRequestWarning by default.
+
+RBAC Summary (TEST ONLY - images/tests/rbac-test-user-permissions.yaml; not shipped):
+- The SDK has NO ServiceAccount. Minimum user permissions illustrated by tests:
+- ClusterRole: test-user-ray-admin
+  - API Groups: ray.io
+  - Resources: rayclusters, rayjobs
+  - Verbs: create, delete, get, list, patch, update, watch
+- ClusterRole: test-user-kueue-admin
+  - API Groups: kueue.x-k8s.io
+  - Resources: clusterqueues, localqueues, resourceflavors, workloads
+  - Verbs: create, delete, get, list, patch, update, watch
+- ClusterRole: kueue-batch-user-role
+  - "" namespaces: create, get, list, watch
+  - kueue.x-k8s.io clusterqueues, localqueues, resourceflavors: full CRUD+watch
+  - ray.io rayclusters, rayjobs: full CRUD+watch
+  - apps deployments: full CRUD+watch
+  - "" configmaps, pods, secrets, services: full CRUD+watch
+- Bindings (cluster-scoped, test user unless noted):
+  - test-user-self-provisioner -> self-provisioner
+  - test-user-admin -> admin
+  - test-user-cluster-admin -> cluster-admin
+  - test-user-kueue-admin -> test-user-kueue-admin
+  - test-user-ray-admin -> test-user-ray-admin
+  - kueue-batch-user-rolebinding -> kueue-batch-user-role  (Group/system:authenticated)
+  - kueue-batch-user-specific-rolebinding -> kueue-batch-user-role
+
+Service Mesh Configuration:
+- None. The SDK relies on platform Gateway auth (kube-auth-proxy) and
+  NetworkPolicies; it creates no PeerAuthentication / AuthorizationPolicy.
+
+Secrets:
+- <cluster>-ca-secret-* (Opaque: ca.crt/tls.crt + tls.key/ca.key) - Ray cluster
+  CA; provisioned by KubeRay/RHOAI; SDK READS PRIVATE KEY; no auto-rotate
+  (refresh_certificates() / force_regenerate available)
+- <rayjob> file Secret (Opaque) - zipped local files for submitter pod; created
+  by SDK; ownerRef -> RayJob; GC'd; size checked by validate_secret_size
+- image_pull_secrets (kubernetes.io/dockerconfigjson) - user-specified,
+  referenced in RayCluster pod specs
+- Local ~/.local/share/codeflare/tls/<cluster>-<ns>/ files (0600) - client
+  mTLS material; RSA-3072/SHA-256; 30-day default validity; dir key omits API
+  server (cross-cluster collision possible)
+- minio-secret (test only) - e2e fixture with hardcoded credentials
+
+Crypto / FIPS:
+- cryptography (OpenSSL-backed); FIPS depends on workbench image OpenSSL and
+  host FIPS mode. No MD5/SHA1/custom RNG in library code.

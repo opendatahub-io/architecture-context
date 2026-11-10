@@ -1,0 +1,137 @@
+llm-d-model-service — Security Network Diagram (RHOAI 3.7-ea.1)
+Source: architecture/rhoai-3.7-ea.1/llm-d-model-service.md
+Status: Upstream DEPRECATED (superseded by llm-d-incubation/llm-d-modelservice Helm chart);
+        no Konflux build on analyzed branch — likely lineage context, not a shipped image.
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL / USERS (Untrusted until authenticated)                       │
+│                                                                         │
+│  [User / llm-d-deployer]                [Inference Client]              │
+│         │                                       │                       │
+│         │ Port: 6443/TCP                        │ Port: Gateway listener│
+│         │ Protocol: HTTPS                       │ Protocol: HTTP/HTTPS  │
+│         │ Encryption: TLS 1.2+                  │ Encryption: per GW    │
+│         │ Auth: User creds + RBAC               │ Auth: per Gateway     │
+│         │       (modelservice-editor-role)      │                       │
+│         ▼                                       ▼                       │
+├─────────────────────────────────────────────────────────────────────────┤
+│  CLUSTER CONTROL PLANE                  INGRESS (external to component) │
+│                                                                         │
+│  [kube-apiserver]                       [Gateway]                       │
+│  - 6443/TCP HTTPS, TLS 1.2+             - Referenced by HTTPRoute       │
+│  - No admission webhooks for              parentRefs (spec.routing.     │
+│    ModelService                           gatewayRefs)                  │
+│         ▲                               - TLS / auth determined by the  │
+│         │                                 Gateway, not this component   │
+│         │ Port: 6443/TCP                        │                       │
+│         │ Protocol: HTTPS (REST + watch)        │                       │
+│         │ Encryption: TLS 1.2+ (client-go)      │                       │
+│         │ Auth: SA token                        │                       │
+│         │ Scope: manager-role ∪ EPP_CLUSTER_ROLE│                       │
+│         │        CLUSTER-WIDE                   │                       │
+├─────────┼───────────────────────────────────────┼───────────────────────┤
+│  NAMESPACE: modelservice-system                 │                       │
+│         │                                       │                       │
+│  [modelservice-controller-manager]              │                       │
+│  - ServiceAccount: modelservice-controller-manager                      │
+│  - Replicas: 1, leader election off             │                       │
+│  - Restricted PSS securityContext               │                       │
+│  - Image: ghcr.io/llm-d/llm-d-model-service     │                       │
+│    (static Go, ubi9/ubi:latest, NOT FIPS)       │                       │
+│  - :8081/TCP HTTP /healthz /readyz — NO AUTH    │                       │
+│  - :8443/TCP HTTPS /metrics                     │                       │
+│      TLS: self-signed unless --metrics-cert-path│                       │
+│      HTTP/2 disabled (Rapid Reset mitigation)   │                       │
+│      AuthN/Z: Bearer → TokenReview + SAR        │                       │
+│         ▲                                       │                       │
+│         │ Port: 8443/TCP (metrics-service)      │                       │
+│         │ Protocol: HTTPS                       │                       │
+│         │ Encryption: TLS (self-signed default) │                       │
+│         │ Auth: Bearer token (metrics-reader)   │                       │
+│  [Prometheus]                                   │                       │
+│                                                 │                       │
+│  Controller is NOT on the inference data path.  │                       │
+│  It creates the tenant resources below via the API server.             │
+├─────────────────────────────────────────────────┼───────────────────────┤
+│  NAMESPACE: <ModelService namespace> (tenant)   ▼                       │
+│                                                                         │
+│                     ┌─────────── Gateway ───────────┐                   │
+│                     │                               │                   │
+│      Port: 9002/TCP │                               │ Port: 8000/TCP    │
+│      gRPC ext-proc  │                               │ HTTP              │
+│      Enc: NONE      │                               │ Enc: NONE         │
+│      Auth: NONE     │                               │ Auth: NONE        │
+│      (samples)      ▼                               ▼ (samples)         │
+│  [<msvc>-epp-service → EPP Pod]          [<msvc>-decode → Decode Pods]  │
+│  - SA: <msvc>-epp-sa                     - vLLM + routing sidecar       │
+│  - RoleBinding → EPP_CLUSTER_ROLE        - SA: PD SA (pull secrets)     │
+│  - 9002 gRPC, 9003 health, 9090 metrics          │                      │
+│  - Image: llm-d-inference-scheduler              │ Port: 8000/TCP HTTP  │
+│                                                  │ + NIXL KV 5557       │
+│                                                  │ Enc: NONE            │
+│                                                  │ Auth: NONE           │
+│                                                  ▼                      │
+│                                          [<msvc>-prefill → Prefill Pods]│
+│                                                  │                      │
+│                                                  │ Port: 443/TCP HTTPS  │
+│                                                  │ Auth: HF_TOKEN       │
+│                                                  │ (secretKeyRef)       │
+│                                                  ▼                      │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES (reached by model-server pods only, never controller)│
+│                                                                         │
+│  [HuggingFace (hf://)]   [OCI registries (oci://)]   [PVC (pvc://)]     │
+│  - HTTPS/443, HF_TOKEN   - HTTPS/443, pull secrets   - same namespace   │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- ClusterRole: modelservice-manager-role (→ SA modelservice-system/modelservice-controller-manager)
+  - "" configmaps, serviceaccounts: create, delete, get, list, patch, update, watch
+  - "" services: create, delete, list, patch, update, watch (no get)
+  - apps deployments: create, delete, get, list, patch, update, watch
+  - apps deployments/scale: patch, update
+  - gateway.networking.k8s.io httproutes: create, delete, get, list, patch, update, watch
+  - inference.networking.x-k8s.io inferencemodels, inferencepools: full CRUD + watch
+  - llm-d.ai modelservices: full CRUD + watch; /finalizers: update; /status: get, patch, update
+  - rbac.authorization.k8s.io rolebindings: create, delete, get, list, patch, update, watch
+- ClusterRoleBinding: modelservice-manager-epp-rolebinding → $EPP_CLUSTER_ROLE (cluster-wide)
+  - Required so the controller can bind EPP SAs to that ClusterRole (escalation rule)
+- ClusterRole: modelservice-metrics-auth-role — tokenreviews: create; subjectaccessreviews: create
+- ClusterRole: modelservice-metrics-reader — nonResourceURL /metrics: get
+- Role: modelservice-leader-election-role (modelservice-system) — configmaps/leases CRUD; events create, patch
+- Aggregate roles: modelservice-admin (*), -editor (CRUD), -viewer (get, list, watch) on modelservices
+- Dynamic RoleBinding: <msvc>-epp-rolebinding (tenant ns) → ClusterRole $EPP_CLUSTER_ROLE → <msvc>-epp-sa
+- Effective controller permissions: manager-role ∪ $EPP_CLUSTER_ROLE, cluster-wide
+
+Service Mesh / Network Policy:
+- No service mesh configuration (no PeerAuthentication / AuthorizationPolicy).
+- Optional NetworkPolicy config/network-policy: allows 8443 only from namespaces labelled
+  metrics: enabled — NOT enabled by default.
+- No NetworkPolicies created for tenant EPP / model-server Services (open in-cluster).
+
+Admission Control:
+- None. webhook.NewServer constructed (cmd/run.go:139) but no handlers registered.
+
+Secrets:
+- spec.modelArtifacts.authSecretName (Opaque, key HF_TOKEN) — user-provisioned; injected via
+  secretKeyRef into model containers for hf:// URIs; controller never reads it; no rotation
+- --pd-pull-secrets / --epp-pull-secrets (kubernetes.io/dockerconfigjson) — platform admin;
+  attached to generated PD/EPP ServiceAccounts; no rotation
+- metrics-server-cert (kubernetes.io/tls, optional) — cert-manager (commented out);
+  certwatcher hot-reload when provided
+
+Security Findings:
+- [HIGH] Cross-namespace BaseConfig READ: spec.baseConfigMapRef.namespace honoured
+  (child_resources.go:234-242); any ModelService creator can project another namespace's
+  ConfigMap into their own via controller's cluster-wide configmaps get.
+- [HIGH] Cross-namespace ConfigMap WRITE: BaseConfig configMaps[].namespace honoured; owner-ref
+  error only logged (child_resources.go:372-381), CreateOrUpdate still runs cluster-wide.
+- [MEDIUM] Controller SA highly privileged cluster-wide (RoleBindings, Deployments, ConfigMaps,
+  plus $EPP_CLUSTER_ROLE); compromise affects all tenants.
+- [MEDIUM] Tenant data path (Gateway→EPP 9002, Gateway→decode 8000, decode→prefill 8000/5557)
+  plaintext and unauthenticated in samples.
+- [MEDIUM] FIPS: CGO_ENABLED=0 static build fails check-payload; non-RH builder image
+  (quay.io/projectquay/golang:1.24); runtime base ubi9/ubi:latest unpinned; no hermetic build.
+- [LOW] Probes :8081 unauthenticated (by design); metrics TLS self-signed by default.
+- [INFO] Cluster-wide informer cache of Deployments/Services/ConfigMaps/RoleBindings/SAs.
+- [INFO] deploy/ scaffold (pods/exec granted to system:authenticated) is unrelated and unused.

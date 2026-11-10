@@ -1,0 +1,56 @@
+sequenceDiagram
+    autonumber
+    participant Client as Client<br/>(user / Gateway HTTPRoute / service)
+    participant Prom as Prometheus<br/>openshift-monitoring:prometheus-k8s
+    participant KRP as kube-rbac-proxy<br/>8443/TCP HTTPS TLS 1.2+
+    participant OIDC as OIDC Issuer<br/>443/TCP HTTPS (optional)
+    participant K8s as Kubernetes API<br/>6443/TCP HTTPS TLS 1.2+
+    participant App as Upstream App<br/>8080/TCP localhost HTTP
+    participant Out as stdout<br/>(OCSF audit, optional)
+
+    rect rgb(230, 240, 255)
+    Note over Client,Out: Flow 1: Authenticated request (TokenReview + SAR)
+    Client->>KRP: Any method /path<br/>Bearer token or x509 client cert
+    Note over KRP: allow-paths (404) → ignore-paths bypass → timeouts
+    KRP->>K8s: POST TokenReview<br/>Auth: ServiceAccount token
+    K8s-->>KRP: user / groups (cached 2 min)
+    alt not authenticated
+        KRP-->>Client: 401 Unauthorized
+    end
+    loop each attribute set (Format1 rewrites / Format2 endpoint mapping)
+        KRP->>K8s: POST SubjectAccessReview<br/>Auth: ServiceAccount token
+        K8s-->>KRP: allowed / denied (allow 5 min, deny 30s cache)
+    end
+    alt any attribute set denied, or Format2 method unmapped
+        KRP-->>Client: 403 Forbidden
+    else all allowed
+        KRP->>App: Forward request (HTTP, or HTTPS / mTLS / h2c)<br/>optional x-remote-user / x-remote-groups
+        App-->>KRP: Response (upstream timeout 30s to headers)
+        KRP-->>Client: Response
+    end
+    KRP-)Out: OCSF 1.9.0 API Activity event (when --audit-log-profile=metadata)
+    end
+
+    rect rgb(255, 240, 225)
+    Note over Prom,App: Flow 2: Prometheus metrics scrape (hardcoded authorizer)
+    Prom->>KRP: GET /metrics<br/>Bearer SA token
+    KRP->>K8s: POST TokenReview<br/>Auth: ServiceAccount token
+    K8s-->>KRP: system:serviceaccount:openshift-monitoring:prometheus-k8s
+    Note over KRP: Hardcoded authorizer allows — no SAR issued
+    KRP->>App: GET /metrics (HTTP 8080/TCP)
+    App-->>KRP: metrics
+    KRP-->>Prom: metrics
+    end
+
+    rect rgb(230, 255, 230)
+    Note over Client,App: Flow 3: OIDC-authenticated request
+    KRP->>OIDC: Discovery + JWKS (startup and periodic)<br/>no auth, system or custom CA
+    OIDC-->>KRP: signing keys
+    Client->>KRP: Request<br/>OIDC JWT bearer (RS256 default)
+    Note over KRP: JWT verified locally (no TokenReview)
+    KRP->>K8s: POST SubjectAccessReview<br/>Auth: ServiceAccount token
+    K8s-->>KRP: allowed
+    KRP->>App: Forward (HTTP 8080/TCP)<br/>identity headers optional
+    App-->>KRP: Response
+    KRP-->>Client: Response
+    end

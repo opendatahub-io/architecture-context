@@ -1,0 +1,172 @@
+odh-observability - Security Network Diagram (RHOAI 3.7.0-ea.1)
+Source: architecture/rhoai-3.7-ea.1/odh-observability.md (commit bb7d91d)
+Image:  quay.io/rhoai/odh-observability-rhel9 (also runs as the method-gate sidecar)
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                        │
+│                                                                              │
+│  [User / Perses / Gateway]                                                   │
+│         │ Port: 443/TCP   Protocol: HTTPS   Encryption: TLS                  │
+│         │ Auth: Bearer token                                                 │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (OpenShift Router) - all Routes are reencrypt, point at proxies     │
+│                                                                              │
+│  [data-science-prometheus-route]        → namespace-proxy :8443              │
+│  [data-science-thanos-querier-route]    → thanos-querier-proxy :8443         │
+│                                           (destination CA = service CA)      │
+│  [data-science-prometheus-cluster-proxy]→ cluster-proxy :8443                │
+│                                           (insecure → Redirect)              │
+│  No Gateway API HTTPRoutes. Perses ingress is owned by odh-dashboard.        │
+│         │ Port: 8443/TCP   Protocol: HTTPS                                   │
+│         │ Encryption: TLS reencrypt (service-ca cert, cluster TLS profile    │
+│         │   flags: --tls-min-version/--tls-cipher-suites/--tls-curve-prefs;  │
+│         │   non-FIPS curves dropped in FIPS mode; fail closed if unknown)    │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  MONITORING NAMESPACE (spec.namespace, e.g. redhat-ods-monitoring)           │
+│  NetworkPolicy per operand. Proxies accept only gateway/ingress ns + Perses. │
+│                                                                              │
+│  [Namespace proxy pod: data-science-{prometheus-namespace,thanos-querier}-   │
+│   proxy]                                                                     │
+│   ┌──────────────────────────────────────────────────────────────────────┐   │
+│   │ kube-rbac-proxy :8443  - TokenReview + SAR get metrics.k8s.io/pods   │   │
+│   │                          for every namespace= value in the URL       │   │
+│   │      │ 127.0.0.1:9092/TCP  HTTP  plaintext (loopback)                │   │
+│   │      ▼                                                               │   │
+│   │ method-gate (/manager method-gate)                                   │   │
+│   │   Prometheus: GET/HEAD only                                          │   │
+│   │   Thanos: + URL-encoded form POST to read-only query APIs;           │   │
+│   │           rejects POST body containing a namespace field             │   │
+│   │      │ 127.0.0.1:9091/TCP  HTTP  plaintext (loopback)                │   │
+│   │      ▼                                                               │   │
+│   │ prom-label-proxy - injects namespace matcher into PromQL             │   │
+│   └──────────────────────────────────────────────────────────────────────┘   │
+│         │ Port: 10902/TCP  Protocol: HTTP  Encryption: NONE                  │
+│         ▼                                                                    │
+│  [Thanos Querier thanos-querier-data-science-thanos-querier] (internal only) │
+│                                                                              │
+│  [data-science-prometheus-cluster-proxy] kube-rbac-proxy                     │
+│   --allow-paths=/metrics, static authz (cluster-monitoring-view)             │
+│         │ Port: 9090/TCP  HTTPS  mTLS (client cert prometheus-operated-tls)  │
+│         ▼                                                                    │
+│  [prometheus-operated] MonitoringStack Prometheus                            │
+│         │ Port: 8889/TCP HTTPS TLS (scrapes collector prometheus exporter)   │
+│         ▼                                                                    │
+│  [OTel Collector data-science-collector]                                     │
+│   - OTLP receiver 4317/TCP gRPC (+4318 HTTP)  TLS  Auth: none (NetPol)       │
+│   - exporters 8889/8890 HTTPS TLS                                            │
+│   - → TargetAllocator: HTTPS mTLS (cert-manager certs, client cert)          │
+│   - → Tempo: OTLP gRPC TLS (service CA), SA token (Tempo write ACL)          │
+│  [OTel Collector data-science-usage-logs]                                    │
+│   - OTLP 4317/4318 TLS, Auth: none (NetPol); from MaaS gateway logger        │
+│   - → LokiStack gateway: OTLP/HTTP 443/8080 TLS (service-ca), SA token       │
+│  [Korrel8r] :8443 HTTPS (service-ca), caller token via TokenReview,          │
+│   MCP disabled, egress limited to API server EndpointSlices                  │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  OPERATOR NAMESPACE (operatorNamespace)                                      │
+│                                                                              │
+│  [odh-observability manager]  SA: <fullname>   UID 1001                      │
+│   - :8443/TCP HTTPS /metrics  TLS (service-ca <fullname>-metrics-tls)        │
+│       Auth: Bearer + TokenReview/SAR; NetPol: monitoring namespace only      │
+│   - :8081/TCP HTTP /healthz /readyz  no auth (by design; NetPol open)        │
+│   - :9443/TCP HTTPS /mutate-prometheus-monitors                              │
+│       TLS: cluster APIServer profile (Strict) / Go defaults (Legacy) /       │
+│            Strict Intermediate stand-in if unreadable; HTTP/1.1 ALPN         │
+│       Cert: cert-manager self-signed Issuer (<fullname>-webhook-cert)        │
+│       NetPol ipBlock: 172.30.0.0/16, 10.128.0.0/14, 10.0.0.0/16              │
+│       failurePolicy: Fail, timeout 5 s                                       │
+│         ▲                                                                    │
+│         │ 9443/TCP HTTPS TLS - caller: kube-apiserver (host network)         │
+│         │                                                                    │
+│         │ 6443/TCP HTTPS TLS 1.2+ - SA token (watch, SSA, GC, TokenReview)   │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  CONTROL PLANE                                                               │
+│  [kube-apiserver] 6443/TCP                                                   │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  TENANT / WORKLOAD NAMESPACES (label monitoring.opendatahub.io/scrape=true)  │
+│  [Workloads, KServe, MaaS] ServiceMonitors / PodMonitors (labelled by        │
+│   webhook) - scraped by collector per monitor (HTTP/HTTPS; DCGM :9400 HTTP)  │
+│  → Collector OTLP 4317/4318 TLS                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                           │
+│  [S3 / GCS] 443/TCP HTTPS TLS - traces.storage.secret, LokiStorageConfig     │
+│  [Remote OTLP / prometheusremotewrite] user-defined port, TLS required for   │
+│   non-local endpoints, usageLogs.credentialSecret token                      │
+│  [OpenShift Thanos] 9091/9092 HTTPS TLS - Perses datasource upstream         │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+Remaining plaintext hops:
+- kube-rbac-proxy → method-gate → prom-label-proxy (pod loopback, HTTP)
+- prom-label-proxy → Thanos Querier :10902 (HTTP, NetworkPolicy-restricted)
+- Default DCGM scrape over HTTP :9400
+
+RBAC Summary:
+- ClusterRole: <fullname>-manager (bound to SA <fullname>)
+  - services.platform.opendatahub.io: monitorings (+status, finalizers) - full
+  - monitoring.rhobs: monitoringstacks, thanosqueriers, monitors, rules - full CRUD
+  - monitoring.coreos.com: podmonitors, servicemonitors - *
+  - tempo.grafana.com, opentelemetry.io, loki.grafana.com, perses.dev,
+    observability.openshift.io: operand CRs - full CRUD
+  - admissionregistration.k8s.io: validatingadmissionpolicies(+bindings) - full CRUD
+  - rbac.authorization.k8s.io: get, list, watch, create;
+    update/patch/delete only on named resources
+  - core: configmaps, secrets, services, serviceaccounts - full CRUD (cluster-wide)
+  - apps/batch, networkpolicies, routes, leases - full CRUD
+  - authentication/authorization: tokenreviews, subjectaccessreviews - create
+  - read: pods, namespaces, nodes(/metrics), CRDs, apiservers, OLM objects,
+    serving.kserve.io inferenceservices/llminferenceservices
+  - mlflow.kubeflow.org experiments - update
+  - nonResourceURLs /metrics, /api(/*), /apis(/*) - get
+- ClusterRole: <fullname>-metrics-reader → data-science-monitoringstack-prometheus
+- odh-observability-opentelemetry-cert-manager (cert-manager.io full CRUD)
+  → opentelemetry-operator-controller-manager
+- Proxy SAs → cluster-monitoring-view + system:auth-delegator
+- Collector SA → generate-processors-role, tempo-trace-export, mlflow-trace-export
+- TargetAllocator SA → generate-processors-targetallocator-role;
+  Role data-science-collector-targetallocator-secrets per secretNamespaces entry
+- Korrel8r SA → korrel8r-query + system:auth-delegator
+- Usage-logs SA → data-science-usage-logs-processor
+- CLF SA → collect-application-logs, cluster-logging-write-application-logs
+
+Admission Control:
+- MutatingWebhook podmonitor-injector.opendatahub.io / servicemonitor-injector
+  .opendatahub.io (monitoring.coreos.com/v1, monitoring.rhobs/v1; CREATE, UPDATE)
+  Adds monitoring.opendatahub.io/scrape=true when namespace opted in and
+  default-monitoring exists. failurePolicy Fail.
+- AdmissionProbe: canary PodMonitor every 5 min →
+  webhook_admission_probe_* metrics, MonitoringWebhookAdmissionPathDown alert.
+- ValidatingAdmissionPolicy rendered by the controller.
+
+Secrets:
+- <fullname>-webhook-cert (kubernetes.io/tls) - cert-manager, auto-rotate
+- <fullname>-metrics-tls (kubernetes.io/tls) - service-ca, auto-rotate
+- data-science-*-proxy(-service)-tls (kubernetes.io/tls) - service-ca, auto-rotate
+- prometheus-operated-tls (kubernetes.io/tls) - Prometheus web TLS / cluster-proxy client cert
+- data-science-collector(-monitoring)-tls, *-collector-headless-tls - service-ca
+- Korrel8r -tls (kubernetes.io/tls) - service-ca
+- TargetAllocator CA / serving / client certs - cert-manager via OTel operator
+- data-science-prometheus-cluster-proxy-kube-rbac-proxy (Opaque) - proxy config
+- traces.storage.secret (Opaque) - S3/GCS creds for TempoStack, user, no rotation
+- LokiStorageConfig.secretName (Opaque) - S3 creds (static/token/token-cco)
+- usageLogs.credentialSecret (Opaque) - remote exporter token, user, no rotation
+
+FIPS / Build:
+- CGO_ENABLED=1 GOEXPERIMENT=strictfipsruntime -tags strictfipsruntime (Konflux)
+- Runtime base: ubi9/ubi-minimal-pqc (digest-pinned); hermetic gomod prefetch
+- No InsecureSkipVerify in non-test code; SHA-256 used only for config checksums
+
+Security Observations:
+- Webhook failurePolicy Fail: operator downtime blocks monitor create/update in
+  opted-in namespaces.
+- Webhook ipBlock CIDRs default to OpenShift/ROSA install values; non-default
+  machine CIDR clusters must override them.
+- Operator SA holds cluster-wide Secret CRUD and * on monitors.
+- Any user able to label a namespace monitoring.opendatahub.io/scrape=true opts it
+  into cluster-wide scraping.
+- Tempo/trace queries have no per-namespace proxy equivalent; storage is shared.
+- TargetAllocator does not discover monitoring.rhobs/v1 monitors, though the
+  webhook labels them.
+- Test-only (not shipped): lgtm / oauth-proxy from tests/e2e/prerequisites.

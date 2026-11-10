@@ -1,0 +1,119 @@
+llm-d-kv-cache - Security Network Diagram (RHOAI 3.7-ea.1)
+Source: architecture/rhoai-3.7-ea.1/llm-d-kv-cache.md
+Scope: shipped artifacts only - Go indexer library (inside EPP scheduler),
+       UDS tokenizer sidecar (odh-llm-d-kv-cache-rhel9),
+       Go PVC evictor (odh-llm-d-kv-pvc-evictor-rhel9).
+No Services, Ingress, Routes, NetworkPolicies or CRDs are defined by this repo.
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Internet)                                                    │
+│                                                                         │
+│  [Hugging Face Hub - huggingface.co]      [ModelScope] (optional)       │
+│  - Port: 443/TCP HTTPS                    - Port: 443/TCP HTTPS         │
+│  - TLS: system / certifi CA bundle        - TLS                         │
+│  - Auth: optional HF_TOKEN (env)          - Auth: none                  │
+│  - Purpose: tokenizer/config download     - Enabled: USE_MODELSCOPE     │
+│         ▲                                                               │
+│         │ Egress from UDS tokenizer (InitializeTokenizer, first use)    │
+│         │ Port: 443/TCP  Protocol: HTTPS  Encryption: TLS               │
+│         │ RISK: trust_remote_code=True - repo Python code runs in       │
+│         │       sidecar for caller-supplied model id                    │
+├─────────┼───────────────────────────────────────────────────────────────┤
+│  CLUSTER NETWORK (workload namespace; no NetworkPolicies shipped)       │
+│         │                                                               │
+│  ┌──────┼────────────────────────────────────────────────────────────┐  │
+│  │ EPP SCHEDULER POD (rendered by KServe LLMInferenceService)        │  │
+│  │      │                                                            │  │
+│  │  [UDS tokenizer sidecar]  image: odh-llm-d-kv-cache-rhel9         │  │
+│  │  - gRPC tokenization.TokenizationService                          │  │
+│  │    (Tokenize, RenderChatTemplate, InitializeTokenizer,            │  │
+│  │     RenderChatCompletion, RenderCompletion)                       │  │
+│  │  - Listener: unix:///tmp/tokenizer/tokenizer-uds.socket           │  │
+│  │  - Encryption: none (add_insecure_port)  Auth: none               │  │
+│  │  - Max message: 100 MB                                            │  │
+│  │  - HTTP /healthz 8082/TCP on 0.0.0.0, plaintext, no auth          │  │
+│  │  - Test-only TCP gRPC when GRPC_PORT set; reflection opt-in       │  │
+│  │      ▲                                                            │  │
+│  │      │ ┌ POD-LOCAL TRUST BOUNDARY ─────────────────────────────┐  │  │
+│  │      │ │ emptyDir /tmp/tokenizer, socket dir mode 0700          │  │  │
+│  │      │ │ Port: UDS  Protocol: gRPC  Encryption: none            │  │  │
+│  │      │ │ Auth: none - filesystem permissions only               │  │  │
+│  │      │ └────────────────────────────────────────────────────────┘  │  │
+│  │  [EPP scheduler container] (llm-d-router, precise-prefix-cache-   │  │
+│  │   scorer) linking Go kvcache / kvevents / tokenization libs       │  │
+│  │      ▲                    │                    │                  │  │
+│  └──────┼────────────────────┼────────────────────┼──────────────────┘  │
+│         │                    │                    │                     │
+│         │ Ingest KVEvents    │ Optional index     │ Optional tracing    │
+│         │ Port: 5557/TCP     │ Port: 6379/TCP     │ Port: 4317/TCP      │
+│         │ (configurable)     │ Protocol: RESP     │ Protocol: OTLP/gRPC │
+│         │ Protocol: ZMTP SUB │ Encryption: TLS    │ Encryption: none    │
+│         │ payload msgpack    │  only rediss:// /  │  (WithInsecure)     │
+│         │ Encryption: none   │  valkeys://        │ Auth: none          │
+│         │ Auth: none         │ Auth: password in  │         ▼           │
+│         │                    │  URL (optional)    │ [OTel Collector]    │
+│         │                    ▼                                          │
+│         │            [Redis / Valkey] (optional, shared, no tenant      │
+│         │             filtering)                                        │
+│         │                                                               │
+│  [vLLM pod] (RHAIIS / llm-d runtime)                                    │
+│  - KVEvents ZMQ PUB (BlockStored / BlockRemoved), topic kv@...          │
+│  - OffloadingConnector FS tier (llmd_fs_backend) writes .bin blocks     │
+│         │                                                               │
+│         │ POSIX FS write   Auth: UID/fsGroup                            │
+│         ▼                                                               │
+│  [Shared KV-cache PVC]  mount /kv-cache, dir kv/model-cache/models      │
+│         ▲                                                               │
+│         │ POSIX FS statfs (every 0.5 s), stat/atime, unlink             │
+│         │ Auth: UID/GID/fsGroup must match writer                       │
+│         │                                                               │
+│  [PVC evictor]  image: odh-llm-d-kv-pvc-evictor-rhel9                   │
+│  - Deployment, 1 replica, Recreate                                      │
+│  - ServiceAccount: llm-d-kv-cache-pvc-evictor (no token automount)      │
+│  - non-root UID 65532, drop ALL caps, seccomp RuntimeDefault            │
+│  - Requests 1 CPU / 1Gi, limits 4 CPU / 2Gi                             │
+│  - Deletes cold .bin when usage > 85%, stops at 70%                     │
+│  - No listening port by default; no Kubernetes API access               │
+│         │                                                               │
+│         │ Optional: STORAGE_EVENTS_ENDPOINT (bind)                      │
+│         │ Protocol: ZMTP PUB, msgpack BlockRemoved                      │
+│         │ Topic: kv@SHARED_STORAGE@<model>                              │
+│         │ Encryption: none   Auth: none (no CURVE)                      │
+│         ▼                                                               │
+│  [Indexer subscribers] (EPP scheduler kvevents.Pool)                    │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- ClusterRoles / Roles: none defined by shipped components
+- Bindings: none
+- ServiceAccount llm-d-kv-cache-pvc-evictor: automountServiceAccountToken=false,
+  no bindings, no Kubernetes API calls
+- UDS tokenizer sidecar: runs under the EPP scheduler pod's SA (set by KServe)
+- Not shipped: examples/kv_events/pod_reconciler (demo Pod watcher);
+  deploy/ stub referencing SA operator-controller-manager and missing rbac files
+
+Service Mesh Configuration:
+- None defined. No PeerAuthentication, AuthorizationPolicy or NetworkPolicy.
+- All in-cluster channels (ZMQ, OTLP, Redis without rediss://, /healthz)
+  are plaintext and unauthenticated.
+
+Authentication & Authorization:
+- TokenizationService (UDS): none; enforcement = socket dir 0700 inside
+  pod-shared emptyDir. Any same-pod container with matching UID can call
+  InitializeTokenizer (remote download + trust_remote_code).
+- :8082/healthz: none; reachable cluster-wide unless NetworkPolicy restricts.
+- Evictor ZMQ PUB (optional): none; any subscriber reaching the port receives.
+
+Secrets:
+- HF_TOKEN (env, optional) - Hugging Face auth for gated tokenizer repos;
+  provisioned by deployer / KServe pod spec; no rotation
+- Redis/Valkey password (in Address URL, optional) - index backend auth;
+  scheduler configuration; no rotation
+- No TLS certificates mounted; no cert-manager usage
+
+Crypto / FIPS:
+- Go evictor: CGO_ENABLED=1, GOEXPERIMENT=strictfipsruntime,
+  base ubi9/ubi-minimal-pqc:9.8
+- Tokenizer: system OpenSSL from AIPCC cpu:3.5 (UBI9)
+- FNV-32a / FNV-64a used for sharding and block keys (non-security use)
+- No InsecureSkipVerify, custom ciphers or MinVersion settings found

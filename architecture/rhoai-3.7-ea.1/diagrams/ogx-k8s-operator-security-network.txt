@@ -1,0 +1,176 @@
+OGX K8s Operator - Security Network Diagram (RHOAI 3.7-ea.1)
+Source: architecture/rhoai-3.7-ea.1/ogx-k8s-operator.md
+Version: 5d871c7 (branch rhoai-3.7-ea.1, OPERATOR_VERSION 0.17.2)
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                        │
+│                                                                              │
+│  [End User]                              [External Client] (legacy mode)     │
+│       │                                        │                             │
+│       │ Port: 443/TCP                          │ Port: 443/TCP               │
+│       │ Protocol: HTTPS                        │ Protocol: HTTPS             │
+│       │ Encryption: TLS                        │ Encryption: TLS (edge)      │
+│       │ Auth: Platform auth (Praxis)           │ Auth: Distribution-defined  │
+│       ▼                                        ▼                             │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  INGRESS / FRONT DOOR                                                        │
+│                                                                              │
+│  [Praxis Gateway]                        [Ingress Controller / Router]       │
+│  - Namespace: praxis-standalone          - Ingress networking.k8s.io/v1      │
+│  - Selector: praxis-gateway (default)    - Host: externalAccess.hostname     │
+│  - Not part of this repo                 - TLS: Edge, Secret                 │
+│                                            externalAccess.tls.secretName     │
+│                                          - Created only in legacy mode;      │
+│                                            webhook requires host + TLS       │
+│       │                                        │                             │
+│       │ Port: 8321/TCP                         │ Port: 8321/TCP              │
+│       │ Protocol: HTTP                         │ Protocol: HTTP              │
+│       │ Encryption: mTLS expected via          │ Encryption: None            │
+│       │   spec.network.tls (NOT wired by       │   (TLS terminated at edge)  │
+│       │   operator on this branch)             │ Auth: Distribution-defined  │
+│       │ Auth: x-user-id / x-tenant-id headers  │                             │
+│       ▼                                        ▼                             │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  TENANT NAMESPACE (OGXServer namespace)                                      │
+│                                                                              │
+│  [NetworkPolicy] (per CR)                                                    │
+│  - Praxis mode: ingress only from Praxis gateway pods + operator namespace   │
+│  - Legacy mode: all pods in same namespace + OpenShift router                │
+│  - Can be disabled (Praxis mode: admission warning only)                     │
+│                                                                              │
+│  [Service <name>-service]  ClusterIP 8321/TCP HTTP (spec.network.port)       │
+│         │                                                                    │
+│         ▼                                                                    │
+│  [OGX Server Pod]                                                            │
+│  - Image: odh-ogx-core (RELATED_IMAGE_ODH_OGX_CORE_IMAGE) / distribution     │
+│  - ServiceAccount: per-OGXServer                                             │
+│  - SCC: nonroot-v2 (RoleBinding to system:openshift:scc:nonroot-v2)          │
+│  - Config: ConfigMap <name>-config-<hash> at /etc/ogx/config.yaml            │
+│  - CA trust: managed ConfigMap at /etc/ssl/certs/ca-bundle (SSL_CERT_FILE)   │
+│  - Praxis mode: server.auth trusts x-user-id/x-tenant-id headers;            │
+│    Responses + Conversations APIs disabled                                   │
+│         │                                                                    │
+│         │ Port: provider-specific                                            │
+│         │ Protocol: HTTPS / TCP                                              │
+│         │ Encryption: per provider (CA bundle mounted)                       │
+│         │ Auth: Secret-injected env credentials (apiKey, connectionString)   │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  APPLICATIONS NAMESPACE (redhat-ods-applications / operator namespace)       │
+│                                                                              │
+│  [ogx-module manager]  Deployment opendatahub-ogx-operator                   │
+│  - ServiceAccount: opendatahub-ogx-operator                                  │
+│  - Init container copy-manifests: /manifests -> emptyDir                     │
+│  - Metrics: 8443/TCP HTTPS (service-CA or self-signed), NO authn/authz       │
+│  - Health: 8081/TCP HTTP, no auth                                            │
+│         │                                                                    │
+│         │ Port: 6443/TCP  Protocol: HTTPS  Encryption: TLS 1.2+              │
+│         │ Auth: ServiceAccount token                                         │
+│         │ Action: apply root operator CRD, RBAC, Deployment, webhook,        │
+│         │         ServiceMonitor/PrometheusRule                              │
+│         ▼                                                                    │
+│  [Kubernetes API Server] ◄─────────────────────────────────────┐             │
+│         │                                                      │             │
+│         │ Port: 443/TCP -> 9443/TCP                            │ 6443/TCP    │
+│         │ Protocol: HTTPS                                      │ HTTPS       │
+│         │ Encryption: TLS (cluster TLS profile, service-CA)    │ TLS 1.2+    │
+│         │ Auth: Kubernetes admission                           │ SA token    │
+│         ▼                                                      │             │
+│  [ogx-k8s-operator-webhook-service] ──► [OGX Operator manager] ┘             │
+│                                         - Deployment                         │
+│                                           ogx-k8s-operator-controller-manager│
+│                                         - SA: ogx-k8s-operator-              │
+│                                               controller-manager             │
+│                                         - Webhook: 9443/TCP HTTPS            │
+│                                         - Metrics: 8443/TCP HTTPS            │
+│                                           Bearer -> TokenReview/SAR          │
+│                                           (only with --metrics-cert-path)    │
+│                                         - Health: 8081/TCP HTTP              │
+│                                         - Leader lease: 54e06e98.ogx.io      │
+│                                                │                             │
+│                 ┌──────────────────────────────┼──────────────┐              │
+│                 │ Status polling               │ OCI label    │              │
+│                 │ Port: 8321/TCP               │ fetch        │              │
+│                 │ Protocol: HTTP               │ 443/TCP,     │              │
+│                 │ Encryption: None             │ 80/TCP fallbk│              │
+│                 │ Auth: None, 5s timeout       │ Anonymous    │              │
+│                 │ /v1/providers, /v1/version   │              │              │
+│                 ▼                              ▼              │              │
+│        [OGX Server Service]            (see External)         │              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                           │
+│                                                                              │
+│  [Container Registry - docker.io / quay.io]                                  │
+│  - Purpose: OCI config labels (com.ogx.distribution.default-config)          │
+│  - Port: 443/TCP HTTPS, silent fallback to 80/TCP HTTP (downgrade risk)      │
+│  - Auth: Anonymous (no pull secrets)                                         │
+│                                                                              │
+│  [Inference Providers / SQL / KV backends]                                   │
+│  - Purpose: spec.providers, spec.storage                                     │
+│  - Auth: user Secrets labeled ogx.io/watch: "true"                           │
+│                                                                              │
+│  [Prometheus / platform monitoring]                                          │
+│  - Scrapes operator 8443/TCP (Bearer), module 8443/TCP (no auth),            │
+│    OGX servers via ServiceMonitor (monitoring.opendatahub.io/scrape)         │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+Services:
+- ogx-k8s-operator-controller-manager-metrics-service  ClusterIP 8443/TCP -> 8443  HTTPS  Bearer -> TokenReview/SAR
+- ogx-k8s-operator-webhook-service                     ClusterIP 443/TCP  -> 9443  HTTPS  Kubernetes admission
+- opendatahub-ogx-metrics-service                      ClusterIP 8443/TCP -> 8443  HTTPS  None
+- <ogxserver>-service (per CR)                         ClusterIP 8321/TCP -> 8321  HTTP   Header auth (Praxis) / distribution-defined
+
+Admission Webhook:
+- vogxserver.kb.io (Validating), /validate-ogx-io-v1beta1-ogxserver, 443->9443/TCP
+  - failurePolicy: Fail; ogx.io/v1beta1 ogxservers; CREATE, UPDATE
+  - CA injected via service.beta.openshift.io/inject-cabundle
+  - Rejects unknown distributions, duplicate provider IDs, disallowed volume types,
+    external access without hostname + TLS secret; Praxis-mode warnings only
+
+RBAC Summary:
+- ClusterRole: ogx-k8s-operator-manager-role  (SA ogx-k8s-operator-controller-manager)
+  - ogx.io ogxservers (+status, finalizers): full CRUD
+  - apps deployments, autoscaling HPAs, batch jobs, policy PDBs,
+    networking.k8s.io ingresses/networkpolicies, monitoring.coreos.com: full CRUD
+  - core services/serviceaccounts: full CRUD; configmaps/PVCs: create/get/list/patch/update/watch
+  - core secrets: get, list, watch (CLUSTER-WIDE; label filter is cache-only, not an RBAC boundary)
+  - rbac rolebindings: full CRUD; clusterrolebindings: delete/get/list; clusterroles: get/list/watch
+  - CRDs, config.openshift.io apiservers: get/list/watch; SCC: use
+- ClusterRole: ogx-k8s-operator-proxy-role / metrics-auth: tokenreviews, subjectaccessreviews create
+- ClusterRole: ogx-k8s-operator-tls-profile: config.openshift.io apiservers (cluster) get/list/watch
+- Role: ogx-k8s-operator-leader-election-role: configmaps, leases CRUD; events create/patch
+- ClusterRole: opendatahub-ogx manager-cluster-role  (SA opendatahub-ogx-operator)
+  - rbac clusterroles/clusterrolebindings/roles/rolebindings: full CRUD   <-- privilege concentration
+  - admissionregistration validatingwebhookconfigurations: full CRUD
+  - apiextensions customresourcedefinitions: full CRUD
+  - components.platform.opendatahub.io ogxs (+status, finalizers): full CRUD
+  - plus all workload/core/ogx.io/monitoring/SCC grants of the root operator
+- Role: opendatahub-ogx manager-role (module NS): core, apps, autoscaling, networking, policy, rbac roles
+- ClusterRole: system:openshift:scc:nonroot-v2 bound per OGXServer ServiceAccount (RoleBinding in CR NS)
+
+Network Policies:
+- Per-OGXServer NetworkPolicy
+  - Praxis mode (spec.praxisMode.enabled: true): admit Praxis gateway pods + operator namespace only
+  - Legacy mode: admit all pods in namespace + OpenShift router
+- No service mesh / PeerAuthentication configured by this operator
+
+TLS:
+- Webhook + metrics servers use crypto/tls options from the OpenShift APIServer TLS profile
+  (min version, ciphers, adherence); Intermediate fallback off-OpenShift; restart on profile change
+- No InsecureSkipVerify. Plain-HTTP paths: operator -> OGX status polling; registry HTTP fallback
+
+Secrets:
+- ogx-k8s-operator-webhook-cert (kubernetes.io/tls) - webhook serving cert, OpenShift service-ca, auto-rotate
+- ogx-k8s-operator-controller-manager-metrics-service-tls (kubernetes.io/tls) - operator metrics cert, service-ca, auto-rotate
+- opendatahub-ogx-metrics-server-cert (kubernetes.io/tls) - module metrics cert, service-ca, auto-rotate
+- User provider/storage Secrets (Opaque) - env vars in OGX pods; must be labeled ogx.io/watch: "true"; rollout on change
+- spec.network.tls.secretName (kubernetes.io/tls) - existence check only, not mounted
+- spec.network.externalAccess.tls.secretName (kubernetes.io/tls) - Ingress edge TLS
+- spec.praxisMode.migrationJob.targetConnectionString (Opaque) - Praxis migration target DB
+- spec.tls.identity.key (Opaque) - client identity key reference
+
+Security Notes:
+- ogx-module /metrics on 8443 is unauthenticated (no FilterProvider)
+- Praxis header auth trusts any client that can reach 8321; relies on NetworkPolicy
+- OCI registry fetch silently downgrades HTTPS -> HTTP
+- ogx-module SA is cluster-admin-adjacent (cluster RBAC, CRDs, webhook configurations)

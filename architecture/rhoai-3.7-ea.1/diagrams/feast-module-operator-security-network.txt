@@ -1,0 +1,147 @@
+feast-module-operator - Security Network Diagram (RHOAI 3.7-ea.1)
+Source: architecture/rhoai-3.7-ea.1/feast-module-operator.md
+Repo: red-hat-data-services/feast-module-operator @ 2d936b1 (bundled Feast 0.67.0)
+
+NOTE: This operator creates NO Routes, Ingress or Gateway objects. It has no
+external (north-south) exposure. All traffic is cluster-internal.
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│  CLUSTER INTERNAL - MONITORING (namespaces labelled                     │
+│  network.openshift.io/policy-group: monitoring)                         │
+│                                                                         │
+│  [Prometheus / OpenShift monitoring]                                    │
+│         │                                                               │
+│         │ Port: 8443/TCP                                                │
+│         │ Protocol: HTTPS                                               │
+│         │ Encryption: TLS - self-signed (controller-runtime generated); │
+│         │   cluster APIServer TLS profile when adherence is strict,     │
+│         │   else controller-runtime default (TLS 1.2+)                  │
+│         │ Auth: Bearer token -> TokenReview + SubjectAccessReview       │
+│         │   (get on nonResourceURL /metrics)                            │
+│         ▼                                                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│  MODULE OPERATOR NAMESPACE (Helm release namespace;                     │
+│  opendatahub-feast-system in kustomize)                                 │
+│                                                                         │
+│  NetworkPolicy opendatahub-feast-allow-metrics-traffic:                 │
+│    ingress 8443/TCP only from monitoring policy-group namespaces        │
+│  NetworkPolicy opendatahub-feast-allow-egress: ALL egress allowed       │
+│                                                                         │
+│  [Service: opendatahub-feast-metrics-service]                           │
+│  - Type: ClusterIP, 8443/TCP -> 8443                                    │
+│         │                                                               │
+│         ▼                                                               │
+│  [Deployment: opendatahub-feast-operator] (1 replica)                   │
+│  - ServiceAccount: opendatahub-feast-operator                           │
+│  - Image: quay.io/rhoai/odh-feast-module-operator-rhel9                 │
+│  - Init: copy-manifests (/manifests -> emptyDir /opt/manifests)         │
+│  - Runs as UID 65532, read-only root filesystem                         │
+│  - /metrics : 8443/TCP intended, HTTPS, Bearer (SecureServing)          │
+│      !! RISK: chart sets ODH_MODULE_OPERATOR_METRICS_BIND_ADDRESS but   │
+│         loader reads ODH_MODULE_OPERATOR_CONTROLLER_METRICS_BIND_ADDRESS│
+│         -> server likely listens on default :8080; Service/NetPol       │
+│         target 8443. Verify on live cluster.                            │
+│  - /healthz, /readyz : 8081/TCP, HTTP, plaintext, NO auth (kubelet)     │
+│         │                                                               │
+│         │ Port: 6443/TCP                                                │
+│         │ Protocol: HTTPS                                               │
+│         │ Encryption: TLS 1.2+ (in-cluster SA CA trust)                 │
+│         │ Auth: ServiceAccount token                                    │
+│         │ Purpose: reconcile, APIServer TLS profile read/watch,         │
+│         │   leader election (lease opendatahub-feast-operator-lock)     │
+│         ▼                                                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│  KUBERNETES CONTROL PLANE                                               │
+│                                                                         │
+│  [Kubernetes API Server] 6443/TCP HTTPS TLS 1.2+                        │
+│   ▲ ODH/RHOAI platform operator: Helm install of module chart,          │
+│   │   creates FeastOperator default-feastoperator, writes odh-data-config│
+│   ▲ Feast operator (Feast SA): FeatureStore reconcile, finalizer        │
+│   │   feast.dev/capabilities-config-cleanup                             │
+│                                                                         │
+│  Objects written by module operator:                                    │
+│  - FeatureStore CRD (feast.dev), Feast Deployment, RBAC, Services,      │
+│    ServiceMonitor  (namespace: redhat-ods-applications)                 │
+│  - ConfigMap feast-capabilities-config (+ finalizer                     │
+│    components.platform.opendatahub.io/feast-capabilities)               │
+│  - Namespace rhoai-data-registry (create/label; never deleted)          │
+│  - FeastOperator status (Ready, DeploymentsAvailable, releases)         │
+├─────────────────────────────────────────────────────────────────────────┤
+│  DEPLOYED PAYLOAD NAMESPACE: redhat-ods-applications                    │
+│                                                                         │
+│  [Deployment: feast-operator-controller-manager] (upstream Feast 0.67.0)│
+│  - ServiceAccount: feast-operator-controller-manager                    │
+│  [Service: feast-operator-controller-manager-metrics-service]           │
+│  - ClusterIP 8443/TCP HTTPS                                             │
+│  - TLS: OpenShift service-CA cert (Secret controller-manager-metrics-tls)│
+│  - Auth: Bearer (TokenReview/SAR)                                       │
+│  - Scraped via ServiceMonitor (service-CA TLS)                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+EGRESS
+- Kubernetes API server 6443/TCP HTTPS TLS 1.2+, SA token.
+- No external network calls at runtime; manifests are read from the image.
+- NetworkPolicy allows all egress (unrestricted).
+
+RBAC Summary:
+- ClusterRole: opendatahub-feast-manager-role
+  (bound via ClusterRoleBinding opendatahub-feast-manager-rolebinding
+   to SA opendatahub-feast-operator)
+  - core: configmaps, serviceaccounts, services - full CRUD + deletecollection
+  - core: namespaces - create, get, list, patch, update, watch
+  - core: pods - create, delete, deletecollection, get, list, watch
+  - core: pods/exec - create                          !! high privilege
+  - core: secrets - get, list, watch (cluster-wide)   !! high privilege
+  - core: persistentvolumeclaims, pods/log, events
+  - apiextensions.k8s.io: customresourcedefinitions - CRUD
+  - apps/deployments, batch/cronjobs+jobs, autoscaling/hpa, policy/pdb,
+    networking.k8s.io/networkpolicies, coordination.k8s.io/leases - CRUD
+  - rbac.authorization.k8s.io: clusterroles, clusterrolebindings, roles,
+    rolebindings - CRUD; clusterroles bind (system:auth-delegator)  !! high
+  - authentication.k8s.io/tokenreviews, authorization.k8s.io/subjectaccessreviews - create
+  - components.platform.opendatahub.io: feastoperators (+status, finalizers)
+  - feast.dev: featurestores (+status, finalizers) - CRUD
+  - dataregistry.opendatahub.io: registries, tables, volumes, ... - CRUD; connections use
+  - monitoring.coreos.com/servicemonitors - CRUD
+  - route.openshift.io: routes, routes/custom-host
+  - config.openshift.io: apiservers - get, list, watch
+  - sparkoperator.k8s.io/sparkapplications - create, delete, get
+  - kubeflow.org/notebooks, mlflow.opendatahub.io/mlflows - read
+  - olm.operatorframework.io, operators.coreos.com - read
+  - nonResourceURL /metrics - get
+  Rationale: most grants exist only so the module can create the Feast
+  operator's ClusterRole (Kubernetes RBAC escalation prevention).
+- ClusterRole: opendatahub-feast-metrics-auth-role (tokenreviews/SARs create)
+  bound via opendatahub-feast-metrics-auth-rolebinding
+- ClusterRole: opendatahub-feast-metrics-reader (/metrics get)
+- ClusterRoles: opendatahub-feast-components-feastoperator-{admin,editor,viewer}-role
+- Role: opendatahub-feast-leader-election-role (configmaps, events, leases)
+  bound via RoleBinding opendatahub-feast-leader-election-rolebinding
+- Payload (RHOAI): feast-operator-openshift-tls-profile-reader-binding ->
+  SA feast-operator-controller-manager (redhat-ods-applications)
+
+Service Mesh Configuration:
+- None. No PeerAuthentication / AuthorizationPolicy; no sidecars.
+
+Secrets:
+- controller-manager-metrics-tls (kubernetes.io/tls) - Feast operator metrics
+  serving cert; OpenShift service-ca; auto-rotated.
+- metrics-server-cert (kubernetes.io/tls) - optional module metrics cert via
+  cert_metrics_manager_patch.yaml; NOT wired by default (module uses
+  self-signed cert).
+- The module reads no Secrets at runtime (Secrets bypass the cache).
+
+Crypto / FIPS:
+- Build: CGO_ENABLED=1, GOEXPERIMENT=strictfipsruntime, dynamic link,
+  ubi-minimal-pqc base (Dockerfile.konflux). Upstream Containerfile is non-FIPS.
+- Metrics TLS follows cluster APIServer tlsSecurityProfile when adherence is
+  strict; supportedCipherSuiteIDs() includes tls.InsecureCipherSuites(), so an
+  Old/Custom profile can enable legacy ciphers.
+
+Key Risks:
+1. Metrics bind-address env var mismatch (likely :8080 vs 8443 Service/NetPol).
+2. Self-signed metrics certificate on the module operator.
+3. Broad ClusterRole concentrated in one SA (pods/exec, secrets, RBAC CRUD, bind).
+4. migrateDeploymentSelector deletes the Feast Deployment on selector mismatch
+   -> brief Feast operator outage on first upgrade from monolith installs.
+5. Egress unrestricted by NetworkPolicy.

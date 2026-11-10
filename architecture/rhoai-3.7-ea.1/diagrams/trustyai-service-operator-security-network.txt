@@ -1,0 +1,215 @@
+trustyai-service-operator - Security Network Diagram (RHOAI 3.7-ea.1)
+Source: architecture/rhoai-3.7-ea.1/trustyai-service-operator.md
+Commit: 38f25f73406d613f41d1f6dc1087dfcd676935ee (branch rhoai-3.7-ea.1)
+Placeholders: {tas}, {evalhub}, {nemo} = CR instance names; {ns} = instance namespace
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                        │
+│                                                                              │
+│  [External User / Client / Dashboard browser]                                │
+│         │                                                                    │
+│         │ Port: 443/TCP                                                      │
+│         │ Protocol: HTTPS                                                    │
+│         │ Encryption: TLS (OpenShift router cert)                            │
+│         │ Auth: Bearer token (OpenShift user / SA token)                     │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (OpenShift Router - Routes created by the operator)                 │
+│                                                                              │
+│  [Route {tas}]            reencrypt, insecure→Redirect → {tas}-tls:https     │
+│  [Route {evalhub}]        reencrypt, insecure→Redirect → {evalhub}:8443      │
+│  [Route {evalhub}-mcp]    reencrypt, insecure→Redirect (when MCP enabled)    │
+│  [Route {nemo}]           reencrypt if enable-auth="true"                    │
+│                           EDGE + plaintext to pod 8000 if auth NOT enabled   │
+│                           (only when spec.exposeRoute)                       │
+│         │                                                                    │
+│         │ Port: 8443/TCP (Service 443→8443 for TAS/NeMo)                     │
+│         │ Protocol: HTTPS                                                    │
+│         │ Encryption: TLS re-encrypt, service-CA serving certs               │
+│         │ Auth: Bearer → kube-rbac-proxy TokenReview + SubjectAccessReview   │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  USER / TENANT NAMESPACES (operand workloads; NetworkPolicy-scoped ingress)  │
+│                                                                              │
+│  [TrustyAI Service Pod]  (CR: TrustyAIService)                               │
+│   - kube-rbac-proxy      8443/TCP HTTPS  (healthz 9443)                      │
+│       Auth: SAR get services/{tas} in {ns}                                   │
+│       TLS: cluster APIServer profile args (--tls-min-version, ciphers,       │
+│            curves X25519MLKEM768 default)                                    │
+│       → trustyai-service 8081/TCP HTTP (loopback)                            │
+│   - internal-tls-proxy   4443/TCP HTTPS  (cert {tas}-internal)               │
+│       Auth: NONE for /consumer/kserve/v2, /q/health/* (--ignore-paths)       │
+│       → trustyai-service 8080/TCP HTTP (loopback)                            │
+│   - Service {tas}      80/TCP → 8080 HTTP  plaintext, no auth                │
+│                        443/TCP → 4443 HTTPS                                  │
+│   - Service {tas}-tls  443/TCP → 8443 HTTPS (Route backend)                  │
+│   - Storage: PVC or user DB ({tas}-db-credentials, {tas}-db-ca)              │
+│                                                                              │
+│  [EvalHub Pod]  (CR: EvalHub)                                                │
+│   - kube-rbac-proxy      8443/TCP HTTPS  (healthz 9443)                      │
+│       Auth: Bearer + X-Tenant header → namespaced SAR on                     │
+│             trustyai.opendatahub.io evaluations / collections / providers /  │
+│             status-events, mlflow.kubeflow.org/experiments                   │
+│       /api/v1/health: no auth (ignore-paths)                                 │
+│       → evalhub 127.0.0.1:8444/TCP HTTP, user forwarded as X-User            │
+│   - evalhub metrics      8081/TCP HTTP  plaintext, NO AUTH                   │
+│   - [EvalHub MCP Pod] (optional) proxy 8443 → evalhub-mcp 8445               │
+│         │                                                                    │
+│         │ Port: 6443/TCP  HTTPS TLS 1.2+                                     │
+│         │ Auth: EvalHub API SA token (jobs-writer RoleBinding per tenant)    │
+│         ▼                                                                    │
+│  [Evaluation Job Pods] (tenant namespaces, label                             │
+│                         evalhub.trustyai.opendatahub.io/tenant)              │
+│         │ Port: 8443/TCP HTTPS  Auth: job SA token → SAR status-events create│
+│         └──────────────► EvalHub kube-rbac-proxy                             │
+│                                                                              │
+│  [NeMo Guardrails Pod]  (CR: NemoGuardrails)                                 │
+│   - kube-rbac-proxy user  8443/TCP (Svc 443) HTTPS  - only if annotation     │
+│     kube-rbac-proxy admin 8444/TCP (Svc 444) HTTPS    security.opendatahub.io│
+│       TLS: HARDCODED TLS 1.2 + 6 AES-GCM suites       /enable-auth: "true"   │
+│       (does NOT follow cluster TLS profile)                                  │
+│       → NeMo server 127.0.0.1:8000 HTTP                                      │
+│   - Service {nemo} 80/TCP → 8000 HTTP  plaintext, NO AUTH                    │
+│                                                                              │
+│  [LMEvalJob Pod]  (CR: LMEvalJob)                                            │
+│   - lm-eval container + driver (default port 18080); no Service, no Route    │
+│   - Status read by operator via pods/exec (not via network)                  │
+│         │ Port: endpoint port  HTTP/HTTPS  merged CA bundle                  │
+│         │ Auth: user-supplied token (Secret ref)                             │
+│         ▼                                                                    │
+│      [Model inference endpoint from LMEvalJob spec]                          │
+│                                                                              │
+│  [KServe Predictor]  (InferenceService patched by TAS controller)            │
+│   - Raw:        HTTPS 443→4443 to {tas} (service CA), no token               │
+│                 Istio present: DestinationRule SIMPLE TLS 443,               │
+│                 VirtualService rewrites 80→443                               │
+│   - Serverless: HTTP 8080 to pod (plaintext), kServeServerless=enabled       │
+│   - ModelMesh:  MM_PAYLOAD_PROCESSORS env patched on Deployment              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  CONTROL PLANE  (namespace: redhat-ods-applications)                         │
+│                                                                              │
+│  [trustyai-operator-module]                                                  │
+│   - Image: quay.io/rhoai/odh-trustyai-module-operator-rhel9                  │
+│   - SA: trustyai-operator-module-controller-manager                          │
+│   - metrics 8080/TCP HTTP, NO authn/authz (NetworkPolicy opens only 8081)    │
+│   - probes  8081/TCP HTTP                                                    │
+│         │ Port: 6443/TCP HTTPS TLS 1.2+  Auth: SA token                      │
+│         │ Action: SSA apply overlays/rhoai (CRDs, RBAC, Deployment, Svc)     │
+│         ▼                                                                    │
+│  [trustyai-service-operator manager]                                         │
+│   - Image: quay.io/rhoai/odh-trustyai-service-operator-rhel9                 │
+│   - SA: trustyai-service-operator-controller-manager                         │
+│   - --enable-services=TAS,LMES,NEMO_GUARDRAILS,EVALHUB (JOB_MGR off)         │
+│   - metrics 8443/TCP HTTPS, cert trustyai-service-operator-metrics-tls,      │
+│     Bearer → TokenReview + SAR; NetworkPolicy: monitoring namespaces only    │
+│   - probes  8081/TCP HTTP, no auth                                           │
+│   - webhook 9443/TCP HTTPS (Service 443), cert webhook-server-cert,          │
+│     /convert for TrustyAIService and EvalHub (v1alpha1↔v1)                   │
+│   - TLS: cluster APIServer profile (default Intermediate, min TLS 1.2);      │
+│     ProfileWatcher restarts the manager on profile change                    │
+│   - Egress NetworkPolicy: explicit allow-all (HPSTRAT-278)                   │
+│         │                                                                    │
+│         ├─► Kubernetes API 6443/TCP HTTPS TLS 1.2+, SA token                 │
+│         │     watch/CRUD, secrets, ClusterRoleBindings,                      │
+│         │     pods/exec (SPDY/WebSocket) → LMES driver --get-status/--shutdown│
+│         ├─► EvalHub {evalhub}.{ns}.svc:8443 HTTPS TLS ≥1.2,                  │
+│         │     trusts system roots + service CA, operator SA bearer token,    │
+│         │     POST /api/v1/evaluations/jobs/{id}/events                      │
+│         └─► OTLP collector (gRPC/HTTP, opt-in via OTEL_EXPORTER_OTLP_*)      │
+│                                                                              │
+│  [Kubernetes API Server] 6443/TCP  ──► operator webhook Svc 443→9443 (TLS)   │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL / BACKING SERVICES                                                 │
+│                                                                              │
+│  [PostgreSQL]  EvalHub DB (Secret key db-url, pgx DSN) / TAS DATABASE mode   │
+│                Encryption: per DSN                                           │
+│  [MLflow]      443/TCP HTTPS, merged CA, projected SA token (3600s)          │
+│  [Model endpoints for LMES]  HTTP/HTTPS, user token                          │
+│  [OTLP collector]  optional                                                  │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+Monitoring (scrape paths):
+- Prometheus → operator 8443/TCP HTTPS, Bearer → TokenReview + SAR (/metrics get)
+- Prometheus → EvalHub 8081/TCP HTTP, no auth
+- Prometheus → TAS /q/metrics via 80→8080/TCP HTTP, no auth
+- Module /metrics 8080/TCP HTTP, no auth (not opened by its NetworkPolicy)
+
+RBAC Summary:
+- SA trustyai-service-operator-controller-manager (cluster-wide, union of):
+  - tas-manager-role:
+    - trustyai.opendatahub.io trustyaiservices (+status, finalizers): full CRUD
+    - core services, pods, configmaps, secrets, PVCs, serviceaccounts: full CRUD
+    - apps deployments: CRUD; serving.kserve.io inferenceservices: get/list/watch/update/patch
+    - rbac clusterrolebindings, roles, rolebindings: get/list/watch/create/update/delete
+    - networking.istio.io destinationrules, virtualservices: full CRUD
+    - routes CRUD; servicemonitors list/watch/create; networkpolicies get/list/watch/create/update
+  - lmes-manager-role:
+    - lmevaljobs: full CRUD; pods, configmaps, PVCs: CRUD; pods/exec: create, get
+    - secrets, persistentvolumes: get/list/watch; networkpolicies: full CRUD
+  - evalhub-manager-role:
+    - evalhubs (+status, finalizers, proxy), evaluations, collections, providers,
+      status-events: full CRUD
+    - services, configmaps, serviceaccounts: CRUD; namespaces, pods, pods/log, events: read
+    - roles, rolebindings, clusterrolebindings: CRUD
+    - clusterroles bind (resourceNames: evalhub-model-secret, -auth-reviewer-role,
+      -jobs-writer, -job-config, -hardware-profiles-reader, -mlflow-access,
+      -mlflow-jobs-access, -providers-access, -collections-access)
+    - batch jobs, kueue workloads: get/list/watch/patch
+    - mlflow experiments: get/list/create; hardwareprofiles: get/list
+  - nemo-guardrails-manager-role:
+    - nemoguardrails: full CRUD; configmaps, services, secrets, serviceaccounts: full CRUD
+    - deployments, routes, clusterrolebindings: full CRUD
+  - tls-profile-reader: config.openshift.io apiservers get/list/watch
+  - proxy-role / metrics-auth / system:auth-delegator: tokenreviews, subjectaccessreviews create
+- SA trustyai-operator-module-controller-manager (MOST PRIVILEGED; superset of the above):
+  - components.platform.opendatahub.io trustyais: full CRUD
+  - apiextensions customresourcedefinitions: full CRUD
+  - admissionregistration mutating/validating webhookconfigurations: full CRUD
+  - rbac clusterroles, clusterrolebindings, roles, rolebindings: full CRUD + clusterroles bind
+  - core configmaps, secrets, pods, services, SAs, PVCs: full CRUD; pods/exec; pods/log
+  - read: apiservers, gateways, mcpgatewayextensions, prometheuses
+- Operator-created per-instance bindings:
+  - {name}-{ns}-proxy-rolebinding (TAS, CRB) → proxy-role → SA {name}-proxy
+  - {name}-{ns}-auth-reviewer-crb (EvalHub, CRB) → evalhub-auth-reviewer-role → SA {name}-service
+  - Tenant RoleBindings (EvalHub): jobs-writer, job-config, mlflow-*, providers/collections-access
+  - NeMo auth-delegator CRB → system:auth-delegator → per-instance SA
+  - evalhub-tenant-admin-binding (single-tenant mode)
+
+Service Mesh Configuration:
+- No PeerAuthentication / AuthorizationPolicy created.
+- TAS (KServe RawDeployment + Istio present): DestinationRule TLS mode SIMPLE on 443;
+  VirtualService rewrites port 80 → 443 for {tas}.{ns}.svc.cluster.local.
+
+Network Policies (operator-generated):
+- Operator manager: ingress 8443 (monitoring namespaces), 8081, 9443; egress allow-all.
+- Module: ingress 8081 only.
+- TAS / LMES / EvalHub operands: per-workload ingress peers
+  (EvalHub: Route/router, Dashboard BFF, operator pod, Prometheus).
+
+Secrets:
+- trustyai-service-operator-metrics-tls (kubernetes.io/tls) - operator metrics cert, service-ca, auto-rotate
+- webhook-server-cert (kubernetes.io/tls) - conversion webhook cert, service-ca, auto-rotate
+- {tas}-tls, {tas}-internal (kubernetes.io/tls) - TAS proxy certs, service-ca, auto-rotate
+- EvalHub / NeMo serving certs (kubernetes.io/tls) - service-ca, auto-rotate
+- {tas}-db-credentials (Opaque) - DB kind/user/password/host/port/name, user-provided
+- {tas}-db-ca - DB CA cert, user / controller
+- EvalHub DB secret (Opaque, key db-url) - PostgreSQL DSN at /etc/evalhub/secrets, user-provided
+- MLflow projected SA token - 3600s expiry, kubelet-rotated
+- LMES model / HF tokens (Opaque) - user-provided, referenced via pod env
+
+TLS / FIPS:
+- All three Konflux images: CGO_ENABLED=1 GOEXPERIMENT=strictfipsruntime, ubi-minimal-pqc runtime.
+- Curve preference default X25519MLKEM768 (PQC hybrid); plain X25519 dropped in FIPS mode.
+- Exceptions to cluster TLS profile: NeMo kube-rbac-proxy (hardcoded TLS 1.2),
+  EvalHub failure-reporter client (MinVersion TLS 1.2), module metrics (plain HTTP).
+
+Security Observations:
+1. Operator SA is cluster-wide: secrets CRUD, pods/exec, ClusterRoleBinding create/update.
+2. Module SA can create CRDs, webhook configurations, ClusterRoles and bind them.
+3. NeMo without enable-auth annotation: no kube-rbac-proxy, edge Route, plaintext to 8000.
+4. Plaintext/unauthenticated in-cluster ports: EvalHub 8081, TAS 80→8080, NeMo 80→8000,
+   module 8080.
+5. TAS payload ingestion (/consumer/kserve/v2) is authorized only by NetworkPolicy.
+6. EvalHub kube-rbac-proxy auth config is a subPath mount; rule changes need pod restart.
+7. Operator egress is allow-all (tracked HPSTRAT-278).
+8. RHOAI overlay: lmes-allow-online=false, lmes-allow-code-execution=false (base allows both).

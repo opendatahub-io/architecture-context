@@ -1,0 +1,153 @@
+llm-d-router - Security Network Diagram (RHOAI 3.7-ea.1)
+Source: architecture/rhoai-3.7-ea.1/llm-d-router.md (commit 82202af)
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                        │
+│                                                                              │
+│  [Client]                                                                    │
+│      │                                                                       │
+│      │ Port: 443/TCP                                                         │
+│      │ Protocol: HTTPS                                                       │
+│      │ Encryption: TLS (terminated at gateway)                               │
+│      │ Auth: Platform auth enforced at gateway                               │
+│      ▼                                                                       │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (Shared Gateway - Istio / OSSM / AgentGateway / Envoy)              │
+│                                                                              │
+│  [Gateway (Envoy)]                                                           │
+│  - HTTPRoute (gateway.networking.k8s.io/v1) → InferencePool backend          │
+│  - Calls EPP via ext-proc for every request                                  │
+│      │                                                                       │
+│      │ (a) ext-proc callout                                                  │
+│      │ Port: 9002/TCP                                                        │
+│      │ Protocol: gRPC (h2), FULL_DUPLEX_STREAMED                             │
+│      │ Encryption: TLS 1.2+ (self-signed RSA-4096, 10 yr, no SANs default)   │
+│      │ Istio DestinationRule: tls.mode SIMPLE, insecureSkipVerify: true      │
+│      │ Auth: None by default; mTLS only if --client-ca-file set              │
+│      ▼                                                                       │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  CLUSTER INTERNAL - pool / release namespace (NO NetworkPolicy shipped)      │
+│                                                                              │
+│  [EPP - Endpoint Picker]                                                     │
+│  - Image: ghcr.io/llm-d/llm-d-router-endpoint-picker (upstream default)      │
+│  - ServiceAccount: <name>  (one EPP per InferencePool)                       │
+│  - Runs as non-root 65532, distroless/static, CGO_ENABLED=0                  │
+│  - Listeners:                                                                │
+│      9002/TCP gRPC ext-proc     TLS 1.2+          optional mTLS              │
+│      9003/TCP gRPC health       none              none                       │
+│      9090/TCP HTTP(S) metrics   TLS 1.2 if --metrics-cert-dir                │
+│                                 Auth: Bearer → TokenReview + SAR (default)   │
+│                                 pprof enabled by default (same listener)     │
+│      5557/TCP ZMQ KV events     none              none (optional)            │
+│  - Returns selected endpoint to gateway (header / dynamic metadata)          │
+│      │                                                                       │
+│      │ (b) Gateway → selected endpoint                                       │
+│      │ Port: 8000/TCP                                                        │
+│      │ Protocol: HTTP(S)   Encryption: per deployment   Auth: None           │
+│      ▼                                                                       │
+│  [pd-sidecar]  (decode pod, optional - P/D and E/P/D disaggregation)         │
+│  - Image: ghcr.io/llm-d/llm-d-router-disagg-sidecar                          │
+│  - Listener: 8000/TCP HTTPS, TLS 1.2+ (self-signed default), NO auth         │
+│  - SSRF allowlist (--enable-ssrf-protection) OFF by default                  │
+│      │                                                                       │
+│      ├── Port: pod port   Protocol: HTTP/HTTPS (--enable-tls per stage)      │
+│      │   Encryption: optional TLS; --tls-insecure-skip-verify possible       │
+│      │   Auth: None                                                          │
+│      │   ▼ [Remote prefill / encode workers]                                 │
+│      │                                                                       │
+│      ├── Port: 8200/TCP   Protocol: HTTP   Encryption: None (localhost)      │
+│      │   ▼ [Local decoder model server]                                      │
+│      │                                                                       │
+│      └── KV / embedding transfer: NIXL / Mooncake / MoRI-IO / shared storage │
+│          Port: 8998, 14579/TCP   Protocol: TCP/RDMA   Encryption: None       │
+│                                                                              │
+│  [Model server pods - vLLM / SGLang]                                         │
+│  - EPP → pods: target port (e.g. 8000) HTTP, /metrics scrape, no auth/TLS    │
+│  - pods → EPP: 5557/TCP ZMQ KV-cache events, plaintext, optional             │
+│                                                                              │
+│  [coordinator]  (optional)                                                   │
+│  - Image: ghcr.io/llm-d/llm-d-coordinator                                    │
+│  - Listener: 8080/TCP HTTPS TLS 1.2+ (self-signed default), NO auth          │
+│    /v1/chat/completions, /v1/completions, /v1/responses, /v1/messages        │
+│    /v1/requests/{id} GET/DELETE (async status / cancel)                      │
+│  - Metrics: 9090/TCP, no auth                                                │
+│      │                                                                       │
+│      ├── Port: 80/TCP   Protocol: HTTP   Encryption: None (default)          │
+│      │   ▼ [Inference Gateway  http://inference-gateway:80]                  │
+│      └── Port: 6379/TCP Protocol: RESP   Encryption: None (redis://)         │
+│          or TLS (rediss://)   Auth: URL password                             │
+│          ▼ [Redis / llm-d-async]                                             │
+│                                                                              │
+│  [Latency predictor training/prediction servers] (optional)                  │
+│  - EPP → predictor: HTTP, configured port, no TLS, no auth                   │
+│                                                                              │
+│  [Prometheus]                                                                │
+│  - → EPP 9090/TCP with long-lived SA token (Bearer), TokenReview + SAR       │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  KUBERNETES CONTROL PLANE                                                    │
+│                                                                              │
+│  [Kubernetes API]  6443/TCP HTTPS TLS 1.2+, ServiceAccount token             │
+│  - EPP: watch Pods / InferencePool / InferenceObjective /                    │
+│         InferenceModelRewrite (namespace-scoped caches), Leases (HA),        │
+│         TokenReview / SubjectAccessReview                                    │
+│  - pd-sidecar: InferencePool + pods (dynamic client) when SSRF protection on │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL / SHARED SERVICES                                                  │
+│                                                                              │
+│  [OpenTelemetry Collector]  4317/TCP OTLP gRPC/HTTP, per OTEL_* env          │
+│  - EPP --tracing=true by default; coordinator also exports traces            │
+│  [vLLM tokenizer]  HTTP(S), configured, no auth (optional plugin)            │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+Services:
+- <release>-epp           ClusterIP  9002/TCP (grpc-ext-proc, h2c appProtocol) TLS, optional mTLS
+- <release>-epp           ClusterIP  9090/TCP (http-metrics) TokenReview/SAR
+- <release>-epp-headless  Headless   9002/TCP (priority routing, StatefulSet)
+- proxy discovery Service Headless   9002/TCP (standalone service mode)
+- <proxy>                 ClusterIP  router.extraServicePorts (standalone service mode)
+- latency predictor       ClusterIP  training-port / predict-port-N, HTTP, no auth
+
+RBAC Summary:
+- ClusterRole: <cluster-rbac-name> (only when prometheus auth enabled)
+  - authentication.k8s.io  tokenreviews           create
+  - authorization.k8s.io   subjectaccessreviews   create
+  - nonResourceURL /metrics                       get (prometheus-operator provider)
+- GKE ClusterRole (gke provider only) - see routerlib/templates/_gke.yaml
+- Role: <name>-sa              ""                          pods                       get, watch, list
+- Role: <name>-non-sa          llm-d.ai                    inferenceobjectives,
+                                                           inferencemodelrewrites     get, watch, list
+                               inference.networking.k8s.io inferencepools             get, watch, list
+- Role: <name>-leader-election coordination.k8s.io         leases                     get, list, watch, create, update, patch, delete
+  (HA only)                    ""                          events                     create, patch
+- Bindings: ClusterRoleBinding <cluster-rbac-name>; RoleBindings <name>-sa, <name>-non-sa,
+  <name>-leader-election-binding → ServiceAccount <name>
+
+Service Mesh / Gateway Configuration:
+- Istio DestinationRule <release>-epp: host <epp>.<ns>.svc.cluster.local:9002
+  tls.mode SIMPLE, insecureSkipVerify: true  → encrypted but UNAUTHENTICATED hop
+- HTTPRoute <release> → InferencePool backend, attached to shared parent Gateway
+- No PeerAuthentication / AuthorizationPolicy / NetworkPolicy shipped by charts
+
+Secrets:
+- router.monitoring.prometheus.auth.secretName (kubernetes.io/service-account-token)
+  - Bearer token for Prometheus scrape; Helm-provisioned; long-lived, no rotation
+- Serving cert dir --cert-path (kubernetes.io/tls, mounted)
+  - Provisioned externally (operator / cert-manager / service-ca)
+  - EPP reloads with --enable-cert-reload; sidecar/coordinator use file watch
+- Self-signed cert (in-memory) - RSA-4096, 10 years, no SANs, generated at startup, no rotation
+- Redis URL credentials (coordinator config value), no rotation
+
+TLS / Crypto:
+- Go crypto/tls, MinVersion TLS 1.2 (configurable to 1.3, <1.2 rejected), insecure suites rejected
+- Metrics listeners fixed at TLS 1.2 + default ciphers
+- FIPS RISK: CGO_ENABLED=0 static pure-Go crypto, distroless/static base, no strictfipsruntime,
+  no .konflux Dockerfiles on this branch → would fail check-payload; downstream must override
+
+Key Security Findings:
+1. Gateway → EPP ext-proc: TLS with skip-verify; no client auth unless --client-ca-file set
+2. pd-sidecar :8000 and coordinator :8080 have no authentication
+3. pd-sidecar SSRF allowlist off by default; prefill/encode targets come from request headers
+4. Coordinator → gateway defaults to plaintext HTTP :80; Redis plaintext by default
+5. Metrics scrape, ZMQ KV events and KV transfer between model pods are unencrypted
+6. pprof enabled by default on the EPP metrics listener (behind metrics auth)
+7. No NetworkPolicy shipped: ext-proc and sidecar ports reachable cluster-wide

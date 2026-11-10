@@ -1,0 +1,89 @@
+sequenceDiagram
+    autonumber
+    participant User as Data Scientist / Client
+    participant Router as OpenShift Router
+    participant DSGW as data-science-gateway
+    participant KAP as kube-auth-proxy
+    participant Dash as odh-dashboard
+    participant K8s as Kubernetes API
+    participant WB as workbenches-operator + kubeflow
+    participant KRP as kube-rbac-proxy
+    participant KServe as kserve + odh-model-controller
+    participant InfGW as openshift-ai-inference
+    participant MaasGW as maas-default-gateway
+    participant PExt as praxis-extproc
+    participant Authz as Authorino / Limitador
+    participant MaasAPI as maas-api
+    participant EPP as llm-d EPP
+    participant VLLM as vLLM pods
+
+    Note over User,VLLM: Workflow A - Dashboard login and workbench access via data-science-gateway
+
+    rect rgb(255, 240, 220)
+    User->>Router: GET https://rh-ai.{domain}/ (HTTPS 443)
+    Router->>DSGW: Reencrypt Route to gateway Service 443
+    DSGW->>KAP: ext_authz HTTPS 8443 /oauth2/auth<br/>cookie + authorization headers
+    alt No session
+        KAP-->>User: 302 to OpenShift OAuth (user:full)
+        User->>KAP: /oauth2/callback via oauth-callback-route
+    else Session or valid Bearer
+        KAP->>K8s: TokenReview (10s cache)
+        KAP-->>DSGW: 2xx + x-auth-request-* + access token
+    end
+    Note over DSGW: Lua filter sets Authorization Bearer,<br/>strips _oauth2_proxy cookies.<br/>Fail closed, 5s timeout
+    DSGW->>Dash: HTTPRoute rhods-dashboard<br/>HTTPS, DR insecureSkipVerify
+    Dash->>K8s: Create Notebook CR with user token
+    K8s->>WB: Mutating webhooks (Fail)<br/>hardwareprofile + connection injectors
+    WB->>K8s: StatefulSet, Service, kube-rbac-proxy sidecar,<br/>HTTPRoute /notebook/ns/name + ReferenceGrant
+    User->>DSGW: Open workbench (same ext_authz chain)
+    DSGW->>KRP: HTTPS 8443 Bearer
+    KRP->>K8s: TokenReview + SAR get notebooks/name
+    KRP->>KRP: Proxy to Jupyter 8888
+    end
+
+    Note over User,VLLM: Workflow B - LLMInferenceService deployment and inference via openshift-ai-inference
+
+    rect rgb(220, 235, 255)
+    User->>Dash: Deploy LLM
+    Dash->>KServe: List permitted gateways<br/>model-serving-api /api/v1/gateways (SSAR)
+    Dash->>K8s: Create LLMInferenceService
+    K8s->>KServe: Validating + mutating webhooks (Fail)
+    KServe->>K8s: vLLM Deployment / LWS, InferencePool,<br/>llm-d EPP, HTTPRoute to openshift-ai-inference
+    KServe->>K8s: Gateway AuthPolicy gateway-authn (TokenReview + SAR)<br/>EnvoyFilter gateway-authn-ssl (TLS to Authorino)
+    User->>InfGW: POST /v1/chat/completions (HTTPS 443, Bearer)
+    InfGW->>Authz: Kuadrant wasm, gRPC 50051 TLS
+    Authz->>K8s: TokenReview + SAR get llminferenceservices
+    Authz-->>InfGW: Allow
+    InfGW->>EPP: ext_proc 9002 TLS
+    Note over EPP: KV-cache, prefix and load scorers,<br/>optional P/D sidecar routing
+    EPP-->>InfGW: Selected endpoint
+    InfGW->>VLLM: Forward request
+    Note over VLLM: Model servers have no built-in auth.<br/>NIXL KV transfer for P/D
+    VLLM-->>User: Streaming completion
+    end
+
+    Note over User,VLLM: Workflow C - Governed inference via Models-as-a-Service
+
+    rect rgb(225, 245, 225)
+    User->>MaasGW: POST /v1/api-keys with OpenShift token<br/>maas-api-route
+    MaasGW->>MaasAPI: HTTPS 8443, DR insecureSkipVerify
+    MaasAPI-->>User: API key sk-oai-...
+    User->>MaasGW: POST model path, Bearer sk-oai-... (HTTPS 443)
+    MaasGW->>PExt: ext_proc ipp-pre 9004<br/>body model to header
+    MaasGW->>Authz: AuthPolicy maas-gateway-auth
+    Authz->>MaasAPI: /internal/v1/api-keys/validate<br/>NetworkPolicy-protected only
+    Authz->>MaasAPI: /internal/v1/subscriptions/select
+    Note over Authz: OPA subscription check, inject X-MaaS-* headers,<br/>deny client x-maas-*.<br/>Limitador TokenRateLimitPolicy + gateway-default-deny
+    Authz-->>MaasGW: Allow + identity headers
+    MaasGW->>PExt: ext_proc ipp 9004 (fail closed)<br/>provider resolution, usage enforcement
+    alt Internal model
+        MaasGW->>EPP: InferencePool endpoint pick
+        EPP->>VLLM: Generate
+        VLLM-->>MaasGW: Response stream
+    else ExternalModel
+        Note over MaasGW: ai-gateway-controller ServiceEntry +<br/>DR SIMPLE TLS + SNI, provider key injected
+        MaasGW->>MaasGW: HTTPS 443 to external LLM provider
+    end
+    MaasGW->>PExt: Response through ext_proc (usage accounting)
+    MaasGW-->>User: Completion
+    end

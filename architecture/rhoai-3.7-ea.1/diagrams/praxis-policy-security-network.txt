@@ -1,0 +1,146 @@
+praxis-policy: Security Network Diagram (SAR)
+Source: architecture/rhoai-3.7-ea.1/praxis-policy.md
+Version: v0.6.0-1-g828cb41 (commit 828cb41c2f31723445c4e31051b44f59afa2f53f)
+Date: 2026-11-10
+
+SCOPE NOTE: praxis-policy is an embedded Rust LIBRARY. It has no listener,
+Service, Ingress, Route, CRD, RBAC or container image. All inbound exposure and
+all outbound HTTP TLS settings belong to the host (Praxis proxy). Ports marked
+"host-defined" or "configurable" are set in host or policy config.
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL / CALLERS (Untrusted)                                         │
+│                                                                         │
+│  [AI Agent / Client]                                                    │
+│         │                                                               │
+│         │ Port: host-defined                                            │
+│         │ Protocol: HTTP(S)                                             │
+│         │ Encryption: host-defined (Praxis listener TLS)                │
+│         │ Auth: Bearer JWT (RS/PS/ES/EdDSA/HS*, DPoP optional)          │
+│         │       or API key (SHA-256 hashed lookup)                      │
+│         ▼                                                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│  HOST PROCESS: Praxis proxy (RHOAI)                                     │
+│                                                                         │
+│  [Praxis listener] (host-owned)                                         │
+│         │                                                               │
+│         │ In-process Rust API calls (no network)                        │
+│         │ Hooks: pre-invocation, args, result, ...                      │
+│         ▼                                                               │
+│  [praxis-policy PolicyEngine] (embedded library)                        │
+│  - Identity: identity-jwt (JWKS, DPoP replay check), identity-api-key   │
+│  - AuthZ: APL predicates + Cedar / CEL / OPA (regorus, in-process)      │
+│  - Session Taint (principal-bound session ids, Valkey-backed)           │
+│  - Result redaction, audit event per decision                           │
+│  - Fail closed: unknown kind/config keys fail load; plaintext refused   │
+│    unless insecure_http: true; Limitador on_error=deny                  │
+│  - No panic=abort: policy panic does not crash host                     │
+│         │                                                               │
+│         │ All HTTP egress through host-injected HttpTransport           │
+│         │ (pingora; TLS trust, proxy, mTLS = host responsibility)       │
+│         │ Valkey egress through redis-rs + rustls (ring)                │
+│         ▼                                                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│  PLATFORM SERVICES (egress)                                             │
+│                                                                         │
+│  [OIDC IdP JWKS URL]                                                    │
+│  - Port: 443/TCP (configurable)  Protocol: HTTPS                        │
+│  - Encryption: TLS (host transport)  Auth: None                         │
+│  - Purpose: signing keys for JWT/DPoP verification (cached)             │
+│                                                                         │
+│  [OAuth token endpoint]                                                 │
+│  - Port: 443/TCP (configurable)  Protocol: HTTPS                        │
+│  - Encryption: TLS (host transport)                                     │
+│  - Auth: client credentials + subject token (RFC 8693)                  │
+│  - Purpose: per-upstream audience-scoped token exchange                 │
+│                                                                         │
+│  [CIBA back-channel / token endpoint]                                   │
+│  - Port: 443/TCP (configurable)  Protocol: HTTPS                        │
+│  - Encryption: TLS (host transport)                                     │
+│  - Auth: client credentials (+ auth_req_id when polling)                │
+│  - Purpose: out-of-band user approval                                   │
+│                                                                         │
+│  [HashiCorp Vault]                                                      │
+│  - Port: 8200/TCP or 443 (configurable)  Protocol: HTTPS                │
+│  - Paths: /v1/auth/{mount}/login, /v1/{mount}/data/...,                 │
+│           /v1/auth/token/renew-self                                     │
+│  - Encryption: TLS (host transport); HTTP only with insecure_http       │
+│  - Auth: Kubernetes SA JWT / JWT / AppRole -> Vault token               │
+│  - Purpose: secret resolution and credential delegation                 │
+│                                                                         │
+│  [Limitador (Kuadrant)] (experimental)                                  │
+│  - Port: configurable  Protocol: HTTPS (/check, /report)                │
+│  - Encryption: TLS (host transport); HTTP only with insecure_http       │
+│  - Auth: None                                                           │
+│  - Purpose: per-principal token quota (soft cap, per-replica state)     │
+│                                                                         │
+│  [Valkey / Redis]                                                       │
+│  - Port: 6379/TCP (configurable)  Protocol: RESP (rediss://)            │
+│  - Encryption: TLS via rustls; required unless localhost;               │
+│    tls:true + redis:// rejected                                         │
+│  - Auth: ACL user/password                                              │
+│  - Purpose: Session Taint, CIBA correlation, DPoP replay store          │
+│                                                                         │
+│  [HTTP API-key directory]                                               │
+│  - Port: configurable  Protocol: HTTPS                                  │
+│  - Encryption: TLS (host transport)  Auth: configurable credential      │
+│  - Purpose: remote API-key record lookup                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  UPSTREAM SERVICES                                                      │
+│                                                                         │
+│  [Tool / MCP / LLM server]  (called by host, not by the library)        │
+│  - Port: host-defined  Protocol: HTTP(S)  Encryption: host-defined      │
+│  - Auth: delegated, audience-scoped token (RFC 8693 / Vault)            │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- None defined in this repository (no ClusterRoles, Roles, bindings or
+  ServiceAccounts). Any Kubernetes RBAC belongs to the host deployment.
+- Vault Kubernetes auth uses the host pod's ServiceAccount token.
+
+Service Mesh / Network Policy:
+- None defined. Network isolation is a host / platform responsibility.
+
+Secrets (runtime, via secrets provider: env / file / Vault KV v2):
+- OAuth/CIBA client credentials (env/file/Vault ref) - IdP client auth;
+  provisioned by host operator; no auto-rotation
+- Vault auth material (SA token / role_id + secret_id) - Vault login;
+  Vault token renewed by plugin (renew-self)
+- Valkey credentials (URL userinfo or config) - session store auth;
+  provisioned by host operator; no auto-rotation
+- OAuth cache-key secret (in-memory, random bytes) - HMAC key for token
+  cache keys; generated at startup, per process
+- Secret buffers zeroized; env lookup errors do not echo values
+
+Authentication & Authorization:
+- Host routes (tool/resource/prompt/LLM/HTTP): JWT or API key; enforced by
+  embedded PPE; APL require(...), Cedar/CEL/OPA PDPs, Session Taint, redaction
+- Upstream calls: delegated per-audience token via delegate(...) APL action
+
+Multi-Tenancy:
+- Tenant boundary: authenticated principal (sub + issuer); no namespaces
+- Valkey keys use key_prefix + principal-bound session ids (shared instance)
+- Decision cache keyed by SHA-256 of principal + request attributes
+- Single policy document per engine; no per-tenant config separation
+
+Cryptography / FIPS:
+- Default backend: RustCrypto (sha2/hmac), NOT FIPS
+- fips feature: OpenSSL SHA-256 + private DRBG; jwt-openssl-fips: OpenSSL
+  RS/PS/ES verification; HS*/EdDSA refused, RSA 2048-8192, EC P-256/P-384
+- Outside FIPS profile: OAuth delegation, Vault delegation, Valkey
+  (rustls/ring), ordinary jwt (AWS-LC), http-hyper (ring)
+- Runtime gate: crypto_capability_report().fips_profile_is_safe() and
+  SHA-256 self-check in PolicyEngine::initialize()
+- Build gate: make check-fips-graph rejects sha2/hmac/ring/rustls/aws-lc
+- TLS (http-hyper, unused by Praxis): rustls TLS 1.2/1.3, ring ciphers,
+  webpki-roots bundle (not system trust store; OpenShift service CAs fail)
+- Hashes: SHA-256, HMAC-SHA256; no MD5/SHA-1
+
+Security Observations:
+- Cargo.lock contains ring, aws-lc-rs and openssl; enabling builtins selects
+  non-FIPS providers. Whether RHOAI Praxis is FIPS-safe depends on host
+  Cargo features.
+- Correctness of enforcement depends on the host routing all traffic
+  through the engine.
+- Quota is a soft cap with an overrun window; pending-debit state is
+  per-replica and in-process. Quota/ratelimit are experimental.

@@ -1,0 +1,82 @@
+ml-metadata (odh-mlmd-grpc-server) - Security Network Diagram
+Source: architecture/rhoai-3.7-ea.1/ml-metadata.md  (commit 969bcd1, branch rhoai-3.7-ea.1)
+NOTE: The repo has no Kubernetes manifests. Service, NetworkPolicy and deployment come from
+      the deploying operator (data-science-pipelines-operator, inferred).
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│  CLUSTER NETWORK (no Ingress/Route; no NetworkPolicy in repo)            │
+│                                                                          │
+│  [KFP driver / launcher / API server]   [metadata-envoy -> DSP UI]       │
+│   (inferred)                             (inferred gRPC-Web proxy)        │
+│         │                                        │                       │
+│         │ Port: 8080/TCP                         │ Port: 8080/TCP        │
+│         │ Protocol: gRPC (HTTP/2)                │ Protocol: gRPC        │
+│         │ Encryption: NONE by default            │ Encryption: NONE      │
+│         │   (TLS/mTLS only if ssl_config set)    │   by default          │
+│         │ Auth: NONE (optional mTLS client cert) │ Auth: NONE at MLMD    │
+│         ▼                                        ▼                       │
+├─────────────────────────────────────────────────────────────────────────┤
+│  MLMD SERVER (per-DSPA namespace, inferred)                              │
+│                                                                          │
+│  [metadata_store_server]                                                 │
+│  - Image: quay.io/rhoai/odh-mlmd-grpc-server-rhel9 (amd64/arm64/ppc64le) │
+│  - Base: registry.redhat.io/ubi9/ubi-minimal-pqc, UID 65534              │
+│  - Listen: 0.0.0.0:8080/TCP (GRPC_PORT / --grpc_port)                    │
+│  - Service: ml_metadata.MetadataStoreService (~60 RPCs)                  │
+│  - Credentials: grpc::InsecureServerCredentials() by default             │
+│  - TLS lib: BoringSSL 648cbaf (static, NOT FIPS-validated)               │
+│  - AuthZ: none; any reachable client has full read/write                 │
+│  - Kubernetes API: none                                                  │
+│         │                                        ┆                       │
+│         │ Port: 3306/TCP (--mysql_config_port)   ┆ Port: 5432/TCP        │
+│         │ Protocol: MySQL wire                   ┆ Protocol: PostgreSQL  │
+│         │ Encryption: optional TLS (BoringSSL);  ┆ Encryption: NONE      │
+│         │   server cert verify OFF by default    ┆   (libpq built        │
+│         │ Auth: username/password (CLI flags)    ┆   without OpenSSL)    │
+│         │                                        ┆ Auth: password/       │
+│         ▼                                        ▼   passfile            │
+├─────────────────────────────────────────────────────────────────────────┤
+│  DATA TIER                                                               │
+│                                                                          │
+│  [MySQL / MariaDB]  (primary; DSPA MariaDB or external)                  │
+│  [PostgreSQL]       (alternative; --metadata_source_config_type=postgresql)│
+│  [In-memory fake]   (SILENT FALLBACK if no DB configured - data lost     │
+│                      on restart; only a warning is logged)               │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- No ClusterRoles, Roles, RoleBindings or ServiceAccounts in this repo.
+- The server makes no Kubernetes API calls.
+
+Authentication & Authorization:
+- MetadataStoreService/* on 8080: no authentication by default.
+- Optional mTLS: GRPC_SSL_REQUEST_AND_REQUIRE_CLIENT_CERTIFICATE_AND_VERIFY
+  when ssl_config.client_verify is set (metadata_store_server_main.cc:45-61).
+- No per-RPC authorization; isolation relies on network placement and any
+  fronting proxy (DSP Envoy / kube-rbac-proxy, inferred).
+
+Service Mesh Configuration:
+- None defined in repo.
+
+TLS / Crypto:
+- gRPC SslServerCredentials with library defaults (no min TLS version, no cipher list).
+- MySQL cipher list user-supplied (--mysql_config_sslcipher, arbitrary strings allowed).
+- BoringSSL statically linked into gRPC and MariaDB Connector/C; bypasses the RHEL
+  OpenSSL FIPS provider (system OpenSSL in base image is unused).
+- PostgreSQL TLS flags exposed but non-functional (HAVE_LIBSSL/USE_OPENSSL undefined).
+
+Secrets (no Kubernetes Secrets referenced; all provisioned by deployer, inferred):
+- DB password (--mysql_config_password / --postgres_config_password) - CLI flag,
+  visible in process args, no rotation
+- gRPC TLS key/cert/CA - inline PEM in MetadataStoreServerConfig.ssl_config textproto,
+  read once at startup, no rotation
+- DB client TLS cert/key (--mysql_config_ssl* / --postgres_config_ssl*) - file paths,
+  no rotation
+
+Multi-Tenancy:
+- Single-tenant instance (inferred one per DSPA/namespace); no tenant fields, no
+  namespace/user filtering on RPCs; shared DB has no row-level separation.
+
+Build Hermeticity:
+- Non-hermetic (Tekton hermetic: "false"); COPR repo + Bazel 6.3.2 binary fetched
+  via curl without checksum; Bazel http_archives sha256-pinned.

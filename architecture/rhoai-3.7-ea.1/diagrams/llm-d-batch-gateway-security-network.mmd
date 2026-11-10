@@ -1,0 +1,65 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        Client["API Client<br/>Bearer token"]
+    end
+
+    subgraph Ingress["INGRESS: Platform External Gateway"]
+        ExtGW["External Gateway (Envoy)<br/>HTTPRoute batch-route<br/>443/TCP HTTPS, TLS terminated<br/>Kuadrant AuthPolicy: TokenReview / API key<br/>RateLimitPolicy<br/>injects X-MaaS-Username"]
+    end
+
+    subgraph Cluster["CLUSTER INTERNAL (no NetworkPolicy shipped)"]
+        direction TB
+
+        subgraph NS_BG["Namespace: release namespace"]
+            API["batch-gateway-apiserver<br/>Service ClusterIP 8000/TCP<br/>HTTP default, TLS 1.2+ optional<br/>NO in-process auth, trusts tenant header<br/>SA: apiserver, token automounted, no RBAC"]
+            Proc["batch-gateway-processor<br/>StatefulSet, headless Service<br/>no API port<br/>SA: processor, token automounted, no RBAC"]
+            GC["batch-gateway-gc<br/>Deployment, no Service<br/>SA: gc + Role gc-pod-watcher"]
+            Obs["Observability listeners, plain HTTP, unauthenticated<br/>apiserver 8081/TCP, processor 9090/TCP, gc 9091/TCP<br/>/health /ready /metrics<br/>/debug/pprof/* when enablePprof"]
+        end
+
+        IntGW["Internal Gateway (ClusterIP)<br/>HTTPRoute batch-llm-route<br/>AuthPolicy: SubjectAccessReview on inferencepools<br/>no TokenRateLimitPolicy"]
+        Sched["llm-d inference scheduler<br/>vLLM pods"]
+        AsyncD["llm-d-async dispatcher"]
+        K8s["Kubernetes API<br/>6443/TCP HTTPS TLS 1.2+"]
+        Prom["Prometheus<br/>ServiceMonitor / PodMonitor"]
+    end
+
+    subgraph DataSvc["OPERATOR-SUPPLIED DATA SERVICES"]
+        PG[("PostgreSQL<br/>5432/TCP<br/>TLS per sslmode<br/>password in URL<br/>stores user Bearer tokens in plaintext")]
+        S3[("S3-compatible storage<br/>443/TCP HTTPS<br/>static access key / AWS chain<br/>Helm default: fs PVC")]
+        Redis[("Redis/Valkey<br/>6379/TCP RESP<br/>TLS optional rediss<br/>async mode only")]
+        OTel["OpenTelemetry Collector<br/>4317/TCP OTLP/gRPC<br/>insecure by default"]
+    end
+
+    Client -->|"HTTPS/443<br/>TLS<br/>Bearer token"| ExtGW
+    ExtGW -->|"HTTP/8000<br/>plaintext by default<br/>X-MaaS-Username header"| API
+
+    API -->|"PostgreSQL/5432<br/>sslmode<br/>URL password"| PG
+    API -->|"HTTPS/443<br/>TLS<br/>S3 access key"| S3
+
+    Proc -->|"PostgreSQL/5432<br/>sslmode<br/>URL password"| PG
+    Proc -->|"HTTPS/443<br/>TLS<br/>S3 access key"| S3
+    Proc -->|"HTTP or HTTPS (docs: 80/TCP)<br/>optional TLS 1.2+ / mTLS<br/>replayed user Bearer / API key"| IntGW
+    Proc -.->|"RESP/6379<br/>optional TLS<br/>URL password, msg carries token"| Redis
+    Redis -.-> AsyncD
+    AsyncD -.->|"HTTP/HTTPS<br/>pass-through Bearer"| IntGW
+    IntGW -->|"HTTP<br/>gateway-defined"| Sched
+
+    GC -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA token"| K8s
+    GC -->|"PostgreSQL/5432<br/>sslmode"| PG
+    GC -->|"HTTPS/443<br/>S3 access key"| S3
+
+    Prom -->|"HTTP 8081/9090/9091<br/>no TLS, no auth"| Obs
+    NS_BG -.->|"OTLP/gRPC 4317<br/>no TLS by default"| OTel
+
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef internal fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef risk fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+
+    class Client external
+    class ExtGW,IntGW ingress
+    class Proc,GC,Sched,AsyncD,K8s,Prom internal
+    class API,Obs risk
+    class PG,S3,Redis,OTel externalservice

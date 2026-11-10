@@ -1,0 +1,50 @@
+sequenceDiagram
+    autonumber
+    participant RHODS as rhods-operator
+    participant User as User / Dashboard
+    participant K8s as Kubernetes API<br/>6443/TCP HTTPS TLS 1.2+
+    participant Module as trustyai-operator-module<br/>metrics 8080/TCP HTTP
+    participant Op as trustyai-service-operator<br/>metrics 8443 HTTPS, webhook 9443
+    participant KServe as KServe Predictor (Raw)
+    participant TAS as TrustyAI Service Pod<br/>kube-rbac-proxy 8443, internal-tls-proxy 4443
+    participant EH as EvalHub Pod<br/>kube-rbac-proxy 8443 to 127.0.0.1:8444
+    participant Job as Evaluation Job Pod
+    participant DB as PostgreSQL / MLflow
+    participant LMES as LMEvalJob Pod<br/>lm-eval + driver
+    participant Model as Model Inference Endpoint
+
+    Note over RHODS,Op: Flow 1 - Platform enablement
+    RHODS->>K8s: Create/update TrustyAI default-trustyai<br/>HTTPS 6443, SA token
+    Module->>K8s: Watch TrustyAI, check Prometheus instance<br/>HTTPS 6443, SA token
+    Module->>K8s: SSA apply rendered overlays/rhoai<br/>CRDs, RBAC, Deployment, webhook Service
+    Op->>K8s: Read APIServer TLS profile, start TAS/LMES/EVALHUB/NEMO controllers
+
+    Note over User,TAS: Flow 2 - TrustyAIService with KServe payload logging
+    User->>K8s: Create TrustyAIService<br/>HTTPS 6443, user token
+    Op->>K8s: Create Deployment, Services, Route, NetworkPolicy<br/>Patch InferenceService predictor.logger
+    KServe->>TAS: POST /consumer/kserve/v2<br/>HTTPS 443 to 4443, service-CA TLS<br/>No auth (ignore-paths, NetworkPolicy only)
+    Note right of TAS: internal-tls-proxy to trustyai-service 8080 (loopback HTTP)
+    User->>TAS: Route reencrypt 443 to tas-tls Service 8443<br/>Bearer token, kube-rbac-proxy SAR get services
+    Note right of TAS: kube-rbac-proxy to trustyai-service 8081 (loopback HTTP)
+    TAS-->>User: API response
+
+    Note over User,DB: Flow 3 - EvalHub evaluation
+    User->>EH: /api/v1/evaluations/jobs<br/>HTTPS 443 Route or 8443 Service<br/>Bearer + X-Tenant, namespaced SAR
+    Note right of EH: kube-rbac-proxy forwards to evalhub 127.0.0.1:8444 with X-User
+    EH->>K8s: Create Job in tenant namespace<br/>HTTPS 6443, API SA token (jobs-writer RoleBinding)
+    K8s-->>Job: Schedule evaluation pod
+    Job->>EH: POST status events<br/>HTTPS 8443, job SA token, SAR status-events create
+    Op->>K8s: Watch Jobs / Pods / Kueue Workloads
+    Op->>EH: POST /api/v1/evaluations/jobs/{id}/events<br/>HTTPS 8443, TLS 1.2+, operator SA token
+    EH->>DB: Persist results / experiments<br/>Postgres DSN secret, MLflow HTTPS 443 projected token
+    EH-->>User: Evaluation status
+
+    Note over Op,Model: Flow 4 - LMEvalJob
+    User->>K8s: Create LMEvalJob
+    Op->>K8s: Create Pod, PVC, CA ConfigMap, NetworkPolicy<br/>HTTPS 6443, SA token
+    LMES->>Model: Inference requests<br/>HTTP/HTTPS endpoint port, merged CA bundle, user token
+    Model-->>LMES: Completions
+    Op->>K8s: pods/exec driver --get-status / --shutdown<br/>HTTPS 6443 SPDY/WebSocket, SA token
+    K8s->>LMES: exec driver
+    LMES-->>Op: Job status (via exec channel)
+    Op->>K8s: Update LMEvalJob status

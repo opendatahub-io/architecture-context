@@ -1,0 +1,190 @@
+ModelExpress - Security Network Diagram (RHOAI 3.7.0-ea.1)
+Source: architecture/rhoai-3.7-ea.1/modelexpress.md
+Images: quay.io/rhoai/odh-modelexpress-rhel9 (server)
+        quay.io/rhoai/odh-modelexpress-operator-rhel9 (operator)
+
+NOTE: No Routes, Ingresses, Gateways or HTTPRoutes are defined. Every
+ModelExpress endpoint is reachable from inside the cluster only.
+
+┌──────────────────────────────────────────────────────────────────────────┐
+│  MONITORING NAMESPACES (Trusted)                                         │
+│  openshift-monitoring / openshift-user-workload-monitoring /             │
+│  redhat-ods-monitoring                                                   │
+│                                                                          │
+│  [Prometheus]                                                            │
+│      │                                       │                           │
+│      │ Port: 8443/TCP                        │ Port: 9401/TCP            │
+│      │ Protocol: HTTPS                       │ Protocol: HTTP/1.1        │
+│      │ Encryption: TLS (service-ca cert)     │ Encryption: NONE          │
+│      │ Auth: Bearer → TokenReview + SAR      │ Auth: NONE                │
+│      │       (get nonResourceURL /metrics)   │ (server metrics)          │
+│      ▼                                       │                           │
+├──────────────────────────────────────────────┼───────────────────────────┤
+│  OPERATOR NAMESPACE (ODH applications ns or modelexpress-operator-system)│
+│                                              │                           │
+│  [modelexpress-operator] (1 replica)         │                           │
+│  - ServiceAccount: modelexpress-operator     │                           │
+│  - Image: odh-modelexpress-operator-rhel9    │                           │
+│  - 8081/TCP HTTP  /healthz /readyz  (no auth)│                           │
+│  - 8443/TCP HTTPS /metrics (OpenShift)       │                           │
+│  - 8080/TCP HTTP  /metrics (xKS, no auth)    │                           │
+│  - Metrics auth cache: 60s, SHA-256 token    │                           │
+│    keys, max 1024 entries                    │                           │
+│  - NetworkPolicy: ingress from monitoring    │                           │
+│    namespaces only; egress allow-all         │                           │
+│      │                                       │                           │
+│      │ Port: 443/TCP  Protocol: HTTPS        │                           │
+│      │ Encryption: TLS (OpenSSL)             │                           │
+│      │ Auth: SA token modelexpress-operator  │                           │
+│      │ Ops: watch all ns, SSA children,      │                           │
+│      │      read apiservers/cluster TLS prof │                           │
+│      ▼                                       │                           │
+├──────────────────────────────────────────────┼───────────────────────────┤
+│  KUBERNETES CONTROL PLANE                    │                           │
+│                                              │                           │
+│  [Kubernetes API server] 443/TCP (6443)      │                           │
+│  - TokenReview / SubjectAccessReview         │                           │
+│  - ModelMetadata / ModelCacheEntry CRs       │                           │
+│  [apiservers.config.openshift.io/cluster]    │                           │
+│      ▲                                       │                           │
+│      │ Port: 443/TCP  Protocol: HTTPS        │                           │
+│      │ Encryption: TLS                       │                           │
+│      │ Auth: SA token <cr>-server            │                           │
+│      │       (auth-delegator in enforce mode)│                           │
+│      │ Ops: TokenReview, CRD + ConfigMap     │                           │
+│      │      metadata backend                 │                           │
+├──────┼───────────────────────────────────────┼───────────────────────────┤
+│  TENANT / CR NAMESPACE (one ModelExpressServer per namespace by          │
+│  convention)                                 │                           │
+│      │                                       ▼                           │
+│  [modelexpress-server] (Deployment, spec.replicas)                       │
+│  - ServiceAccount: <cr>-server (or spec.serviceAccountName)              │
+│  - Image: odh-modelexpress-rhel9, UID 65532                              │
+│  - Service <cr-name>: ClusterIP 8001/TCP gRPC (h2/h2c)                   │
+│  - 9401/TCP HTTP /metrics (unauthenticated)                              │
+│  - 15008/TCP HBONE (allowed by NetworkPolicy)                            │
+│  - security.mode default: off   tenant_isolation default: off            │
+│  - NetworkPolicy: ingress on 8001/15008/9401 OPEN to all sources         │
+│    unless spec.networkPolicy.allowFrom is set; egress allow-all          │
+│      ▲                                                                   │
+│      │ Port: 8001/TCP                                                    │
+│      │ Protocol: gRPC (HTTP/2)                                           │
+│      │ Encryption: Optional TLS (min TLS1.2, OpenSSL, ALPN h2);          │
+│      │             off unless spec.tls.secretName set                    │
+│      │ Auth: Bearer SA token → TokenReview (audience) + ns:sa allowlist  │
+│      │       when security.mode=enforce; NONE by default                 │
+│      │       Health services always unauthenticated                      │
+│      │                                                                   │
+│  [Inference pods - vLLM / SGLang / TRT-LLM / Dynamo / llm-d]             │
+│      │                                                                   │
+│      │ Peer-to-peer weight transfer                                      │
+│      │ Port: fabric-specific                                             │
+│      │ Protocol: NIXL RDMA (IB/RoCE/EFA) + worker gRPC                   │
+│      │ Encryption: NONE (RDMA data plane)                                │
+│      │ Auth: NONE at MX layer                                            │
+│      ▼                                                                   │
+│  [Peer inference pod (seed)]                                             │
+│                                                                          │
+│  [Cache PVC] (optional, per server instance) ← filesystem writes         │
+│                                                                          │
+│  modelexpress-server                                                     │
+│      │                                                                   │
+│      │ Port: 6379/TCP (configurable)                                     │
+│      │ Protocol: RESP                                                    │
+│      │ Encryption: Optional TLS (rediss://)                              │
+│      │ Auth: Password embedded in URL Secret                             │
+│      ▼                                                                   │
+│  [Redis] (user-supplied, optional metadata backend)                      │
+│                                                                          │
+│  modelexpress-server                                                     │
+│      │                                                                   │
+│      │ Port: 443/TCP                                                     │
+│      │ Protocol: HTTPS                                                   │
+│      │ Encryption: TLS 1.2+ (RHEL OpenSSL)                               │
+│      │ Auth: HF_TOKEN Bearer / NGC API key → token / AWS SigV4           │
+│      ▼                                                                   │
+├──────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES (Untrusted Internet)                                  │
+│                                                                          │
+│  [HuggingFace Hub - huggingface.co or HF_ENDPOINT]                       │
+│  [NVIDIA NGC - api.ngc.nvidia.com, authn.nvidia.com]                     │
+│  [S3-compatible object storage]                                          │
+│  (GCS provider disabled in RHOAI image - rustls-only)                    │
+└──────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- ClusterRole: modelexpress-operator  (bound to SA modelexpress-operator)
+  - modelexpress.opendatahub.io: modelexpressservers         get, list, watch, patch
+  - modelexpress.opendatahub.io: modelexpressservers/status,
+                                 modelexpressservers/finalizers  update, patch
+  - apps: deployments                                         CRUD
+  - "": services, persistentvolumeclaims, serviceaccounts,
+        configmaps                                            CRUD
+  - networking.k8s.io: networkpolicies                        CRUD
+  - rbac.authorization.k8s.io: roles, rolebindings            CRUD
+  - rbac.authorization.k8s.io: clusterrolebindings            CRUD  (!)
+  - authentication.k8s.io: tokenreviews                       create
+  - authorization.k8s.io: subjectaccessreviews                create
+  - modelexpress.nvidia.com: modelmetadatas, modelcacheentries CRUD
+                             (+status get/update/patch, finalizers update)
+- ClusterRole: modelexpress-operator-openshift  (bound to SA modelexpress-operator)
+  - config.openshift.io: apiservers                           get, list, watch
+  - monitoring.coreos.com: servicemonitors                    get, create, patch, update
+- Role: <cr>-metadata  (operator-generated, CR namespace; bound to <cr>-server)
+  - modelexpress.nvidia.com: modelmetadatas, modelcacheentries CRUD
+                             (+status, finalizers)
+  - "": configmaps (ALL in namespace)                         CRUD
+- ClusterRoleBinding: modelexpress-<ns>-<cr>-auth-delegator-<digest>
+  - enforce mode only; binds <cr>-server to system:auth-delegator
+    (tokenreviews, subjectaccessreviews create); finalizer-managed cleanup
+  (!) RBAC escalation prevention requires the operator to hold every
+      permission it grants, hence cluster-wide CRB/Role/ConfigMap CRUD.
+
+Service Mesh Configuration:
+- No Istio PeerAuthentication / AuthorizationPolicy defined.
+- Server NetworkPolicy allows HBONE port 15008 (ambient mesh compatible).
+- Transport security relies on optional application-level TLS.
+
+Authentication Summary:
+- Server gRPC 8001 (Model, P2P, Refit, RefitCollective, Api):
+    Tower AuthLayer, Bearer SA token → TokenReview (audience check) +
+    ns:sa / ns:* allowlist. OFF by default (spec.security.mode: enforce).
+    Decisions cached in moka with zeroized token keys, TTL configurable.
+    Errors: UNAUTHENTICATED / PERMISSION_DENIED / UNAVAILABLE.
+- Server P2P + cache tenancy: tenantIsolation: enforce scopes sources and
+    cache to the caller's verified namespace (requires mode enforce).
+- Server health gRPC: always unauthenticated (kubelet gRPC probes).
+- Server /metrics 9401: unauthenticated, protected only by NetworkPolicy
+    when allowFrom is set.
+- Operator /metrics 8443: TokenReview + SAR (metrics_auth.rs).
+- Operator /metrics 8080 (xKS): unauthenticated, NetworkPolicy only.
+
+TLS / Crypto:
+- Server gRPC: OpenSSL SslAcceptor, min TLS1.2 clamp, configurable
+  ciphers/groups. On OpenShift, defaults follow the cluster APIServer TLS
+  profile when tlsAdherence=StrictAllComponents, otherwise Intermediate.
+- FIPS build: --no-default-features --features openssl; ci/check-fips-crypto.sh
+  rejects ring/rustls/aws-lc symbols. Dynamically linked to RHEL OpenSSL.
+  Runtime base ubi-minimal-pqc:9.8 (digest-pinned).
+
+Secrets:
+- modelexpress-operator-metrics-tls (kubernetes.io/tls) - operator metrics
+    TLS on 8443, OpenShift service-ca, auto-rotated
+- spec.tls.secretName (kubernetes.io/tls, e.g. modelexpress-tls-serving-cert)
+    - server gRPC TLS, service-ca (auto-rotated) or user/cert-manager
+- spec.metadataBackend.redis.urlSecret (Opaque) - Redis URL with embedded
+    credentials, user-provisioned, no rotation
+- spec.credentials.hfTokenSecret (Opaque) - HF_TOKEN, user-provisioned,
+    no rotation
+- spec.credentials.ngcApiKeySecret (Opaque) - NGC_API_KEY, user-provisioned,
+    no rotation
+
+Key Risks:
+- gRPC API unauthenticated and plaintext by default.
+- Server NetworkPolicy ingress open to all sources unless allowFrom is set.
+- Server /metrics 9401 unauthenticated plaintext.
+- Operator holds cluster-wide clusterrolebindings CRUD.
+- Server Role grants CRUD on all ConfigMaps in its namespace; use a
+  dedicated namespace on shared clusters.
+- Shared Redis has no inherent tenant key namespacing.
+- NIXL RDMA weight transfer is unencrypted and unauthenticated at MX layer.

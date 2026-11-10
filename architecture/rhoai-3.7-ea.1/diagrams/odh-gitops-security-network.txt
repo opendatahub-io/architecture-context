@@ -1,0 +1,207 @@
+odh-gitops - Security Network Diagram (RHOAI 3.7-ea.1)
+Source: architecture/rhoai-3.7-ea.1/odh-gitops.md (commit 81e4e96, charts v3.6.0)
+
+odh-gitops is a configuration repository. It builds no images. The topology below
+covers the workloads and network paths that its charts and Kustomize layers
+render directly. Items marked [!] are risks called out in the source document.
+
+=====================================================================================
+ A. OPENSHIFT: INSTALL PATH (Kustomize / rhai-on-openshift-chart)
+=====================================================================================
+┌───────────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL / ADMIN                                                                 │
+│  [Admin (kubectl / helm)]   [Argo CD / OpenShift GitOps]                          │
+│         │  Port: 6443/TCP   Protocol: HTTPS   Encryption: TLS 1.2+                │
+│         │  Auth: cluster-admin token                                              │
+│         │  Note: Helm `lookup` gates CR rendering on CRD existence;               │
+│         │        skipCrdCheck=true for GitOps renders                             │
+│         ▼                                                                         │
+├───────────────────────────────────────────────────────────────────────────────────┤
+│  CONTROL PLANE                                                                    │
+│  [kube-apiserver] ── Subscriptions / OperatorGroups / DSCI / DSC / Kuadrant /     │
+│         │            Authorino / Gateways                                         │
+│         │  Port: 50051/TCP   Protocol: gRPC   Encryption: None (in-cluster)       │
+│         ▼                                                                         │
+│  [OLM catalog pods: redhat-operators / certified-operators / community-operators] │
+│         │                                                                         │
+│         ▼                                                                         │
+│  [rhods-operator (DISABLE_DSC_CONFIG=true)] + dependency operators                │
+│         │  Port: 6443/TCP  HTTPS  TLS 1.2+  Auth: operator SA                     │
+│         ▼  reconciles default-dsci / default-dsc                                  │
+└───────────────────────────────────────────────────────────────────────────────────┘
+
+=====================================================================================
+ B. OPENSHIFT: AI GRID CROSS-SITE INFERENCE (ingress site → provider site)
+=====================================================================================
+┌───────────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                             │
+│  [Client]                                                                         │
+│         │  Port: 443/TCP   Protocol: HTTPS   Encryption: TLS                      │
+│         │  Auth: Bearer token (Kuadrant AuthPolicy via Authorino, clusterWide)    │
+│         ▼                                                                         │
+├───────────────────────────────────────────────────────────────────────────────────┤
+│  INGRESS - ns openshift-ingress                                                   │
+│  [maas-gateway-route]  OpenShift Route, reencrypt,                                │
+│                        insecureEdgeTerminationPolicy: Redirect                    │
+│  [maas-default-gateway] Gateway (maas-gateway-class), 443/TCP HTTPS               │
+│                        TLS terminate, cert maas-gw-service-tls (service-ca)       │
+│         │  Port: 443/TCP → 8443/TCP   Protocol: HTTPS                             │
+│         │  Encryption: TLS (service-ca grid-gateway-listener-tls)                 │
+│         │  Auth: NONE at proxy; caller `Authorization` header REMOVED [!]         │
+│         │  NetworkPolicy: from network.openshift.io/policy-group: ingress         │
+│         ▼                                                                         │
+├───────────────────────────────────────────────────────────────────────────────────┤
+│  AI GRID - ns redhat-ai-grid (ingress site)                                       │
+│  [grid-gateway]  ghcr.io/praxis-proxy/grid-gateway@sha256:af591eb9… (v0.3.0-rc.4) │
+│   - 8443/TCP HTTPS listener   - 9443/TCP metrics HTTPS   - 127.0.0.1:9901 admin   │
+│   - Routes by X-Gateway-Model-Name over grid_site_route                           │
+│   - Mounts grid-model-client-token (long-lived SA token, no rotation) [!]         │
+│         │  Port: 443/TCP (peer Route) → 8080/TCP                                  │
+│         │  Protocol: HTTPS   Encryption: mTLS (Grid CA, ECDSA P-256)              │
+│         │  Auth: client cert grid-site-identity (SPIFFE / peer pin)               │
+│         ▼                                                                         │
+├───────────────────────────────────────────────────────────────────────────────────┤
+│  CROSS-CLUSTER TRUST BOUNDARY (Grid trust domain, single Grid CA,                 │
+│                                rotationPolicy: Never on CA key [!])               │
+├───────────────────────────────────────────────────────────────────────────────────┤
+│  PROVIDER SITE - ns openshift-ingress / redhat-ai-grid                            │
+│  [grid-provider-gateway Route]  passthrough, timeout 300 s, host <site>.grid...   │
+│  [grid-provider-gateway]  8080/TCP, client_cert_mode: require_named               │
+│   - Path allowlist: /v1/chat/completions, /v1/completions, /v1/models,            │
+│     /v1/embeddings, /v1/messages, /v1/responses                                   │
+│   - No NetworkPolicy in combined profile render; mTLS only [!]                    │
+│         │  Port: 443/TCP   Protocol: HTTPS                                        │
+│         │  Encryption: TLS (openshift-service-ca trust)                           │
+│         │  Auth: Bearer grid-model-client-token (shared, not per-user) [!]        │
+│         ▼                                                                         │
+│  [openshift-ai-inference Gateway] → [KServe model servers]                        │
+│   - allowedRoutes.namespaces.from REQUIRED (Selector / Same)                      │
+└───────────────────────────────────────────────────────────────────────────────────┘
+
+=====================================================================================
+ C. OPENSHIFT: AI GRID OBSERVABILITY (spoke → hub)
+=====================================================================================
+┌───────────────────────────────────────────────────────────────────────────────────┐
+│  SPOKE CLUSTER                                                                    │
+│  [ACM metrics-collector] ns open-cluster-management-agent-addon                   │
+│         │  Port: 8890/TCP   Protocol: HTTP   Encryption: NONE [!]                 │
+│         │  Auth: NONE (NetworkPolicy allow-acm-rhai-metrics only)                 │
+│         ▼                                                                         │
+│  [data-science-collector-collector] ns redhat-ods-monitoring (DSCI usageLogs)     │
+│         │  Port: 443/TCP   Protocol: HTTPS   Encryption: TLS                      │
+│         │  Auth: Bearer hub-usage-logs-auth (ACM Policy / --set-file, no rotation)│
+│         ▼                                                                         │
+├───────────────────────────────────────────────────────────────────────────────────┤
+│  HUB CLUSTER - ns ai-grid-o11y / openshift-logging                                │
+│  [Loki gateway Route] /api/logs/v1/infrastructure/otlp                            │
+│  [LokiStack usage-logs] tenant: infrastructure, cluster_name stream label         │
+│         │  Port: 443/TCP   Protocol: HTTPS   Encryption: TLS (service-ca bundle)  │
+│         │  Auth: S3 keys (usage-logs-object-storage)                              │
+│         ▼                                                                         │
+│  [NooBaa S3 / ObjectBucketClaim]                                                  │
+└───────────────────────────────────────────────────────────────────────────────────┘
+
+=====================================================================================
+ D. NON-OPENSHIFT (XKS: AKS / EKS / CoreWeave) - rhai-on-xks-chart
+=====================================================================================
+┌───────────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL                                                                         │
+│  [Admin (helm)]  443/TCP HTTPS TLS, cluster-admin → kube-apiserver                │
+│  [Client]                                                                         │
+│     │  Port: 80/TCP   HTTP   Encryption: NONE (always rendered) [!]               │
+│     │  Port: 443/TCP  HTTPS  TLS (inference-gateway-cert-secret, rhai-ca-issuer)  │
+│     │  Auth: per HTTPRoute / AuthPolicy                                           │
+│     ▼                                                                             │
+├───────────────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (Istio GatewayClass `istio`, LoadBalancer)                               │
+│  [inference-gateway]   80/TCP + 443/TCP                                           │
+│  [maas-default-gateway] 443/TCP HTTPS TLS (when MaaS Managed)                     │
+│  [default-gateway] ns rh-ai-gateway, <subdomain>.<domain>, 443/TCP HTTPS          │
+│     - kube-auth-proxy enforces OIDC (cookie session)                              │
+│     - Egress 443/TCP HTTPS TLS → OIDC issuer (Keycloak / Entra ID),               │
+│       auth: oidc-client-secret                                                    │
+├───────────────────────────────────────────────────────────────────────────────────┤
+│  OPERATORS                                                                        │
+│  [rhai-operator] ns redhat-ods-operator, SA rhai-operator-controller-manager      │
+│   - 9443/TCP webhook (Svc rhai-operator-webhook-service 443), TLS cert-manager,   │
+│     caller: kube-apiserver                                                        │
+│   - 8080/TCP metrics HTTP, --metrics-secure=false, bind 0.0.0.0, no auth [!]      │
+│   - 8081/TCP /healthz /readyz HTTP                                                │
+│   - Image: quay.io/opendatahub/opendatahub-operator:latest,                       │
+│     imagePullPolicy: Always (Konflux substitutes digest at build) [!]             │
+│  [<cloud>-cloud-manager-operator] ns rhai-cloudmanager-system                     │
+│   - 8080/TCP metrics HTTP, 8081/TCP health HTTP                                   │
+│   - 443/TCP HTTPS → kube-apiserver; installs cert-manager, Gateway API, Sail,     │
+│     LWS, RHCL; issues rhai-operator-controller-webhook-cert                       │
+│  [Hook Jobs (ose-cli-rhel9 v4.20, digest-pinned)]                                 │
+│   - 443/TCP HTTPS → kube-apiserver, SA rhai-post-install-hook                     │
+│   - Poll CRDs / CA Secrets / GatewayClass, max 300 s                              │
+├───────────────────────────────────────────────────────────────────────────────────┤
+│  EGRESS                                                                           │
+│  registry.redhat.io / quay.io / ghcr.io  443/TCP HTTPS TLS, rhai-pull-secret      │
+└───────────────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- ClusterRole: rhai-operator-role (XKS) → SA redhat-ods-operator/rhai-operator-controller-manager
+  - rbac.authorization.k8s.io: roles, clusterroles, rolebindings, clusterrolebindings
+    Verbs: *   [!] privilege-escalation capable
+  - apiGroups "*": deployments, services, statefulsets
+    Verbs: create, delete, get, list, patch, update, watch
+  - "*", apps, extensions: replicasets - get, list, watch
+  - ~45 API groups, 95 rules total
+- ClusterRole: rhai-operator-metrics-reader - nonResourceURL /metrics: get
+- ClusterRole: rhai-{aws,azure,coreweave}-cloud-manager-role (23 rules)
+  → SA rhai-cloudmanager-system/<cloud>-cloud-manager-operator
+  + leader-election Role (leases, events) in rhai-cloudmanager-system
+- ClusterRole: cert-manager-operator-controller-manager-clusterrole (vendored, 17 groups, 23 rules)
+- ClusterRole: rhai-post-install-hook (9 rules, create/get/patch) → SA <release-ns>/rhai-post-install-hook
+  + rhai-post-install-hook-cert binding in redhat-ods-applications
+- ClusterRole: rhai-pre-delete-hook - kserves, *kubernetesengines, platforms(default): get, list, watch, delete
+- ClusterRole: rhai-pre-upgrade-delete-crs - CRDs: get; aigateways: get, list, watch, delete
+- ClusterRole: rhai-pre-upgrade-migrate-certmanager - namespaces, serviceaccounts, deployments,
+  leases(cert-manager-operator-lock), *kubernetesengines, certmanagers: get, list, watch, patch
+- ClusterRole: xks-gateway-config - gatewayconfigs lifecycle apply/delete
+- ClusterRole: usage-logs-infrastructure-writer / -reader (loki.grafana.com infrastructure: create / get)
+  → SA ai-grid-o11y/usage-logs-{writer,reader}
+- Role: <release>-grid-enrollment-ca-bootstrap - Secret create + name-scoped get/update/patch
+  [!] persists after uninstall; hub-site Role can create any Secret in operator namespace
+- ClusterRole: <release>-grid-bootstrap-membership-<hash> (ACM / core)
+- Role: praxis-gateway role-mount-reconciliation (optional) → SA grid-operator
+
+Authentication & Authorization:
+- grid-provider-gateway :8080      mTLS, named Grid-CA client cert, path allowlist (Praxis listener)
+- grid-gateway :8443               no inbound auth; Authorization removed; NetworkPolicy ingress group
+                                   [!] caller identity does not propagate cross-site
+- grid-gateway :9443 metrics       TLS only; NetworkPolicy (redhat-ods-monitoring,
+                                   openshift-user-workload-monitoring)
+- MaaS / KServe Gateways           Kuadrant AuthPolicy via Authorino (configured by operator)
+- XKS default-gateway              OIDC cookie session via kube-auth-proxy
+- XKS operator metrics :8080       none
+- ACM ScrapeConfig → :8890         none (HTTP); NetworkPolicy allow-acm-rhai-metrics
+
+Service Mesh Configuration:
+- OpenShift: no PeerAuthentication/AuthorizationPolicy defined in this repo; Gateways use
+  openshift.io/gateway-controller/v1 and maas-gateway-class.
+- XKS: Sail operator (OSSM 3.4.2) provides GatewayClass `istio`; mesh policies are not defined here.
+
+Secrets:
+- grid-model-client-token (kubernetes.io/service-account-token) - grid gateways → KServe Bearer; Helm; NO rotation [!]
+- grid-site-identity (kubernetes.io/tls), grid-ca (Opaque) - site mTLS identity / CA bundle; cert-manager + ACM Policy; site cert rotates
+- grid-ca-key / grid-root-ca (kubernetes.io/tls) - Grid root CA ECDSA P-256; self-signed Issuer or bootstrap Job; NO rotation (rotationPolicy: Never) [!]
+- grid-gateway-listener-tls, grid-gateway-metrics-tls (kubernetes.io/tls) - service-ca; rotates
+- maas-gw-service-tls (kubernetes.io/tls) - MaaS reencrypt Route backend cert; service-ca; rotates
+- authorino-server-cert (kubernetes.io/tls) - Authorino listener; service-ca via prepare-authorino-tls.sh; rotates
+- hub-usage-logs-auth (Opaque, redhat-ods-monitoring) - spoke → hub OTLP token; ACM Policy or --set-file; NO rotation
+- usage-logs-object-storage (Opaque) - LokiStack S3 credentials; OBC / admin; NO rotation
+- rhai-pull-secret (kubernetes.io/dockerconfigjson) - registry pulls (XKS); Helm; NO rotation
+- rhai-operator-controller-webhook-cert (kubernetes.io/tls) - webhook serving cert; cert-manager; rotates
+- rhai-ca (kubernetes.io/tls, ns cert-manager) - platform CA for rhai-ca-issuer; cert-manager policy
+- inference-gateway-cert-secret (kubernetes.io/tls) - XKS inference gateway TLS; cert-manager; rotates
+- oidc-client-secret (Opaque, rh-ai-gateway) - kube-auth-proxy OIDC client; Helm values or BYO;
+  [!] stored in Helm release Secret if set via values; NO rotation
+
+Crypto / FIPS:
+- No images built in repo; FIPS posture inherited from referenced images.
+- ghcr.io/praxis-proxy/grid-gateway is a non-Red Hat image with unknown FIPS posture.
+- No cipher suites or minimum TLS versions configured anywhere in the repo.
+- Grid CA uses ECDSA P-256 (FIPS-approved algorithm).

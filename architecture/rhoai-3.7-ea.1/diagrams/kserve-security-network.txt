@@ -1,0 +1,249 @@
+KServe - Security Network Diagram (RHOAI 3.7-ea.1)
+Source: architecture/rhoai-3.7-ea.1/kserve.md  (commit e4cc9e7, branch rhoai-3.7-ea.1)
+Generated: 2026-11-10
+
+==========================================================================================
+ A. DATA PLANE - INFERENCE TRAFFIC
+==========================================================================================
+
+┌────────────────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                                  │
+│                                                                                        │
+│  [External Client]                                                                     │
+│         │                                                                              │
+│         │ Port: 443/TCP                                                                │
+│         │ Protocol: HTTPS (REST; gRPC via h2c appProtocol)                             │
+│         │ Encryption: TLS (terminated at Gateway)                                      │
+│         │ Auth: Kuadrant AuthPolicy / Authorino (created by odh-model-controller,      │
+│         │       NOT by this repo)                                                      │
+│         ▼                                                                              │
+├────────────────────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (DMZ) - objects created by KServe controllers                                 │
+│                                                                                        │
+│  [Per-ISVC HTTPRoute]      Gateway API, 443/TCP, TLS SIMPLE at Gateway                 │
+│                            visibility via networking.kserve.io/visibility              │
+│  [Per-LLMISVC HTTPRoute    spec.router.gateway refs, 443/TCP, TLS at Gateway,          │
+│   + InferencePool]         TLS to backend                                              │
+│  [OpenShift Route]         443/TCP, edge / reencrypt (ISVC, InferenceGraph, LLMISVC)   │
+│  [Kubernetes Ingress]      80/443, per ingress class                                   │
+│  [Istio VirtualService]    443, Serverless (Knative) mode only                         │
+│                                                                                        │
+│  Gateway, AuthPolicy and EnvoyFilter objects come from the platform operator and       │
+│  odh-model-controller.                                                                 │
+│         │                                                                              │
+│         ├──────────────────────────────┬──────────────────────────────┐                │
+│         │ ISVC                         │ LLMISVC                      │ InferenceGraph │
+│         │ Port: 80→8080/TCP            │ Port: 8000/8443 (runtime)    │ Port: 80→8080  │
+│         │ Protocol: HTTP / h2c         │ Protocol: HTTPS              │ HTTP or HTTPS  │
+│         │ Encryption: none in-cluster  │ Encryption: TLS (default on) │ (--enable-tls) │
+│         │   unless TLS profile on      │ EPP: gRPC ext-proc, TLS      │                │
+│         │ Auth: none (delegated)       │ Auth: at Gateway             │ Auth: Bearer → │
+│         ▼                              ▼                              ▼ TokenReview+SAR│
+├────────────────────────────────────────────────────────────────────────────────────────┤
+│  TENANT NAMESPACE (data science project) - default-allow network for ISVC workloads    │
+│                                                                                        │
+│  [Predictor Pod]                                                                       │
+│  - Model server: 8080/TCP REST (v1/v2/OpenAI), 8081/TCP gRPC (OIP v2, h2c)             │
+│  - No auth middleware in FastAPI/Starlette/gRPC server                                 │
+│  - TLS profile injected via env (KSERVE_TLS_PROFILE_PROVIDER, KSERVE_TLS_MIN_VERSION)  │
+│  - Injected by /mutate-pods:                                                           │
+│      storage-initializer (init)  agent 9081/TCP HTTP  qpext /metrics 9088/TCP HTTP     │
+│                                                                                        │
+│  [LLMISVC pods]  vLLM decode/prefill (Deployment or LeaderWorkerSet), llm-d EPP        │
+│  - Per-LLMISVC ServiceAccount, Role, RoleBinding, NetworkPolicy                        │
+│  - Restrictive monitoring ingress policy is opt-in (default false)                     │
+│                                                                                        │
+│  [InferenceGraph router]  8080/TCP; TokenReview + SAR "get inferencegraphs/<name>"     │
+│         │                                                                              │
+│         │ storage-initializer egress                                                   │
+│         │ Port: 443/TCP     Protocol: HTTPS     Encryption: TLS 1.2+                   │
+│         │ Auth: storage secret on ServiceAccount (AWS keys / IRSA, GCP SA JSON,        │
+│         │       Azure client secret, HF / ModelScope token, OCI pull secret)           │
+│         ▼                                                                              │
+├────────────────────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                                     │
+│                                                                                        │
+│  [S3-compatible]     443/TCP HTTPS TLS 1.2+ (custom CA / verify_ssl configurable)      │
+│  [GCS]               443/TCP HTTPS TLS 1.2+   GCP SA JSON                              │
+│  [Azure Blob/File]   443/TCP HTTPS TLS 1.2+   client secret / identity                 │
+│  [Hugging Face Hub / ModelScope] 443/TCP HTTPS TLS 1.2+   token                        │
+│  [HDFS / WebHDFS]    configured port, HTTP(S), optional TLS, Kerberos (krb5)           │
+│  [OCI registries]    443/TCP HTTPS TLS 1.2 min; InsecureSkipVerify only with           │
+│                      registry.insecure (KernelCache)                                   │
+│  [Logger sink]       configured, HTTP/HTTPS, TLS 1.2 min, optional TlsSkipVerify       │
+└────────────────────────────────────────────────────────────────────────────────────────┘
+
+Confidential model load (inside TEE):
+  [storage-initializer / kserve-decrypt]
+         │ Port: 8006/TCP (127.0.0.1 loopback)
+         │ Protocol: HTTP      Encryption: none (local, in-TEE)
+         │ Auth: TEE attestation to Trustee KBS, handled by CDH
+         ▼
+  [CoCo Confidential Data Hub] ──attestation──► [Trustee KBS]
+         key kbs:///default/kserve-luks-password/key
+  Decryption: JWE A*KW / dir + A*GCM, streaming into /mnt/models
+  Bare-metal LUKS path: SA coco-cc-storage, privileged SCC (allowPrivilegedContainer, RunAsAny)
+
+==========================================================================================
+ B. CONTROL PLANE
+==========================================================================================
+
+┌────────────────────────────────────────────────────────────────────────────────────────┐
+│  CLIENTS                                                                               │
+│  [rhods-operator]  creates Kserve "default-kserve"     [User / Dashboard] creates CRs  │
+│         │ Port: 6443/TCP  HTTPS  TLS 1.2+  ServiceAccount / user token                 │
+│         ▼                                                                              │
+├────────────────────────────────────────────────────────────────────────────────────────┤
+│  KUBERNETES API SERVER (6443/TCP, TLS 1.2+)                                            │
+│         │                                                                              │
+│         │ Admission / conversion calls                                                 │
+│         │ Port: 443/TCP (Service) → 9443/TCP (pod)                                     │
+│         │ Protocol: HTTPS   Encryption: TLS, OpenShift service-CA cert (cert-manager   │
+│         │ on xKS), cluster TLSSecurityProfile   Auth: API-server client (no mTLS)      │
+│         │ failurePolicy: Fail on ALL webhooks, incl. pods CREATE                       │
+│         ▼                                                                              │
+├────────────────────────────────────────────────────────────────────────────────────────┤
+│  NAMESPACE: opendatahub  (controller NetworkPolicies: ingress [{}] = allow-all)        │
+│                                                                                        │
+│  [kserve-module-controller]  SA kserve-module-controller-manager                       │
+│   - 8081/TCP probes only (HTTP, no auth)                                               │
+│   - Renders /opt/manifests-template, server-side-applies via 6443/TCP                  │
+│                                                                                        │
+│  [kserve-controller-manager]  SA kserve-controller-manager                             │
+│   - kserve-webhook-server-service 443→9443  HTTPS                                      │
+│       /mutate|validate-serving-kserve-io-v1beta1-inferenceservice                      │
+│       /mutate-pods, /mutate-kernelcache-pods                                           │
+│       /validate-...-{trainedmodel,inferencegraph,servingruntime,                       │
+│                      clusterservingruntime,localmodelcache}                            │
+│       /validate-localmodelcaches, /validate-localmodelnamespacecaches                  │
+│       /validate-kernelcachecapture-status                                              │
+│   - kserve-controller-manager(-metrics)-service 8443/TCP HTTPS, kube-rbac-proxy SAR    │
+│                                                                                        │
+│  [llmisvc-controller-manager]  SA $(llmisvc-serviceAccountName)                        │
+│   - llmisvc-webhook-server-service 443→9443 HTTPS                                      │
+│       /mutate|validate-serving-kserve-io-v1alpha{1,2}-llminferenceservice[config]      │
+│       /convert (v1alpha1 <-> v1alpha2)                                                 │
+│   - llmisvc-controller-manager-service 8443/TCP HTTPS, Bearer + SAR                    │
+│                                                                                        │
+│  [kserve-localmodel-controller-manager] + [kserve-localmodelnode-agent DaemonSet]      │
+│   - 8081/TCP probes; only when Kserve.spec.modelCache enabled                          │
+│                                                                                        │
+│  All controllers ──► kube-apiserver 6443/TCP HTTPS TLS 1.2+, ServiceAccount token      │
+│                                                                                        │
+│  [Prometheus] ──► 8443/TCP HTTPS, Bearer token → TokenReview + SAR                     │
+│                  (kserve-metrics-reader: nonResourceURL /metrics get)                  │
+└────────────────────────────────────────────────────────────────────────────────────────┘
+
+TLS posture:
+- Controller webhook/metrics servers: min version + ciphers from
+  apiservers.config.openshift.io/cluster TLSSecurityProfile (honours TLSAdherence);
+  Intermediate fallback; TLS 1.2 floor off-OpenShift; explicit flags override.
+- FIPS-approved curve filtering; profile propagated to Python model servers via env.
+- ProfileWatcher reconciles on APIServer changes.
+
+==========================================================================================
+ RBAC SUMMARY
+==========================================================================================
+
+- ClusterRole: kserve-module-manager-role  (SA kserve-module-controller-manager)
+  ** cluster-admin-equivalent: 47 rules **
+  - rbac.authorization.k8s.io clusterroles, roles: bind, escalate
+  - rbac.authorization.k8s.io clusterrole(binding)s, role(binding)s: full CRUD
+  - security.openshift.io securitycontextconstraints: full CRUD
+  - admissionregistration.k8s.io mutating/validatingwebhookconfigurations: full CRUD
+  - apiextensions.k8s.io customresourcedefinitions: full CRUD (incl. delete)
+  - core namespaces, nodes, configmaps, pvcs, pvs, serviceaccounts, services, secrets
+    (secret get/list/watch limited by resourceNames; create/delete/patch/update granted)
+  - apps daemonsets, deployments: full CRUD; batch jobs: delete, get, list
+  - cert-manager.io certificates, issuers, clusterissuers: full CRUD
+  - components.platform.opendatahub.io kserves (+status, finalizers): get, list, watch, patch, update
+  - monitoring/perses/kuadrant/nim/template/networkpolicies: full CRUD
+  - serving.kserve.io clusterservingruntimes, clusterstoragecontainers,
+    llminferenceserviceconfigs, localmodelnodegroups: full CRUD
+  - read-only: clusterversions, subscriptions, clusterextensions, leaderworkersetoperators,
+    hardwareprofiles, monitorings, odhdashboardconfigs, modelexpressservers,
+    runtimeclasses, resourceslices
+
+- ClusterRole: kserve-manager-role  (SA kserve-controller-manager)
+  - serving.kserve.io ISVC, IG, TrainedModel, (Cluster)ServingRuntime,
+    ClusterStorageContainer (+finalizers, status): full CRUD
+  - serving.kserve.io localmodelcaches, localmodelnamespacecaches: get, list, watch
+  - apps deployments; autoscaling HPA; keda.sh scaledobjects; gateway httproutes;
+    networking.k8s.io ingresses; istio virtualservices; knative services;
+    opentelemetrycollectors: full CRUD
+  - core events, services: full CRUD; configmaps: create, get, update
+  - core namespaces, pods: get, list, watch; secrets, serviceaccounts: get
+- ClusterRole: kserve-proxy-role  - tokenreviews, subjectaccessreviews: create
+- ClusterRole: kserve-metrics-reader  - /metrics: get
+
+- ClusterRole: kserve-llmisvc-manager-role  (SA $(llmisvc-serviceAccountName))
+  - core secrets, serviceaccounts, services: full CRUD
+  - core configmaps: create, get, list, patch, update, watch; events: create, patch, update;
+    pvcs, pods: get, list, watch
+  - deployments, HPA, scaledobjects, leaderworkersets, disaggregatedsets: full CRUD
+  - gateway.networking.k8s.io gatewayclasses, gateways, httproutes: full CRUD
+  - inference.networking(.x-)k8s.io inferencepools, inferenceobjectives, inferencemodels,
+    inferencemodelrewrites, inferencepoolimports: full CRUD
+  - rbac clusterrolebindings, rolebindings, roles: full CRUD
+  - resource.k8s.io resourceclaims, resourceclaimtemplates: full CRUD
+  - apiextensions customresourcedefinitions: get, list, watch
+  - serving.kserve.io llminferenceservices, llminferenceserviceconfigs: full CRUD
+  - llmd.ai variantautoscalings: delete, list
+
+- ClusterRole: kserve-localmodel-manager-role  (SA kserve-localmodel-controller-manager)
+  - pvcs, pvs; batch jobs; localmodelcaches/namespacecaches/nodes: full CRUD
+- Role: kserve-localmodelnode-agent-role  (SA kserve-localmodelnode-agent)
+  - batch jobs; serving.kserve.io localmodelnodes (+status): full CRUD
+- KernelCache (source present, not built): kserve-kernelcache-nodegroup-manager
+  (bind clusterroles; roles/rolebindings/secrets/SA CRUD), kserve-kernelcache-token-requester
+  (serviceaccounts/token create), kserve-kernelcachenode-agent-role (kernelcachenodes/status)
+- ClusterRole: openshift-ai-llmisvc-confidential-bare-metal → privileged SCC
+  bound to SA coco-cc-storage
+
+Role bindings: all manager ClusterRoles bound cluster-wide; leader-election Roles bound
+in controller/module namespace.
+
+==========================================================================================
+ NETWORK POLICY / SERVICE MESH
+==========================================================================================
+
+- kserve-controller-manager, llmisvc-controller-manager: NetworkPolicy ingress [{}]
+  (allow-all; exists only to stay reachable under namespace default-deny)
+- Per-LLMISVC NetworkPolicies created by llmisvc controller; restrictive monitoring
+  ingress policy opt-in (EnableLLMMonitoringIngressNetworkPolicy, default false)
+- ISVC workloads: default-allow
+- Istio: VirtualService / DestinationRule used only in Serverless mode or via OSSM
+  Gateway; KServe creates no PeerAuthentication / AuthorizationPolicy
+
+==========================================================================================
+ SECRETS
+==========================================================================================
+
+- kserve-webhook-server-cert (kubernetes.io/tls) - KServe webhook cert;
+  OpenShift service-CA (cert-manager on xKS); auto-rotate
+- llmisvc-webhook-server-cert (kubernetes.io/tls) - LLMISVC webhook cert; service-CA /
+  cert-manager; auto-rotate
+- kserve-webhook-server-secret (Opaque) - placeholder managed by module; no rotation
+- Metrics serving certs (kubernetes.io/tls) - service-CA; auto-rotate
+- Per-LLMISVC TLS secrets (kubernetes.io/tls) - workload/EPP TLS
+  (enableLLMInferenceServiceTLS default on); llmisvc controller / service-CA; auto-rotate
+- User storage secrets (Opaque) - S3/GCS/Azure/HF/HDFS/Git creds on ServiceAccounts,
+  consumed as env by storage-initializer; user-managed, no rotation
+- workload-variant-autoscaler-* tokens (service-account-token) - only if WVA Managed
+- KBS resource kbs:///default/kserve-luks-password/key - Trustee KBS via CDH
+
+==========================================================================================
+ KEY RISKS
+==========================================================================================
+
+1. kserve-module SA is cluster-admin-equivalent (bind/escalate, SCC, webhook configs,
+   CRD delete). If the module pod is compromised, the whole cluster is compromised.
+2. All admission webhooks use failurePolicy: Fail, including pods CREATE. If the webhook
+   server is down, labelled inference pods cannot be created anywhere in the cluster.
+3. Model endpoints have no app-level auth. Isolation depends on Gateway/Kuadrant policy
+   from odh-model-controller. In-cluster ISVC traffic is plaintext by default.
+4. Controller NetworkPolicies are allow-all.
+5. Opt-in InsecureSkipVerify: logger sink (pkg/logger/worker.go:120), kernel-cache
+   registry (pkg/kernelcache/registry/transport.go:39), and Python SDK verify_ssl=False.
+6. Privileged SCC for confidential bare-metal (SA coco-cc-storage).
+7. Probes on 8081 and agent/qpext on 9081/9088 are unauthenticated HTTP.

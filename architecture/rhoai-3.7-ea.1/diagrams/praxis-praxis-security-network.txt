@@ -1,0 +1,109 @@
+PRAXIS (praxis-praxis) - SECURITY NETWORK DIAGRAM
+Source: architecture/rhoai-3.7-ea.1/praxis-praxis.md  (praxis v0.8.0, commit b2ea34a3)
+Note: The repository ships no Kubernetes Service, Ingress, NetworkPolicy or RBAC
+manifests. Exposure is decided by the deployer (for example praxis-proxy/ai or ai-gateway-operator).
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL / DOWNSTREAM (Untrusted)                                           │
+│                                                                              │
+│  [Clients]                                                                   │
+│         │ Port: 8080/TCP (container default; any configured listener)        │
+│         │ Protocol: HTTP/1.1, HTTP/2, gRPC, WebSocket, raw TCP               │
+│         │ Encryption: Optional TLS 1.2/1.3 per listener (rustls + OpenSSL)   │
+│         │ Auth: Per filter chain: JWT / API key / OAuth / DPoP (Policy),     │
+│         │       mTLS client certs, SPIFFE peer trust, IP ACL,                │
+│         │       basic auth (experimental)                                    │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  PRAXIS PROCESS / POD (non-root; allow_root=false by default)                │
+│                                                                              │
+│  [Data plane listener]  0.0.0.0:8080/TCP                                     │
+│  - TLS: min 1.2 (configurable to 1.3), max 1.3; EMS required on TLS 1.2      │
+│  - Ciphers: provider defaults or per-listener allow-list (AES-GCM,           │
+│    CHACHA20-POLY1305, TLS 1.2 ECDHE suites)                                  │
+│  - SNI required unless insecure_options.allow_tls_without_sni                │
+│         │                                                                    │
+│         ▼ (in-process)                                                       │
+│  [Filter pipeline]  request hooks in order, response hooks reversed          │
+│  - Auth, IP ACL, CORS/CSRF, rate limit, body limits, guardrails,             │
+│    credential injection, router + load balancer, access log, tracing         │
+│  - Upstream/health-check destinations screened for SSRF ranges               │
+│    (loopback, link-local, cloud metadata)                                    │
+│                                                                              │
+│  [Health/metrics listener]  9902/TCP  (default bind 127.0.0.1)               │
+│  - Protocol: HTTP   Encryption: NONE   Auth: NONE                            │
+│  - GET /healthy, /ready, /metrics                                            │
+│  - May bind non-loopback for kubelet probes -> needs NetworkPolicy           │
+│         ▲                                                                    │
+│         │ 9902/TCP HTTP, plaintext, no auth                                  │
+│  [Kubelet / Prometheus / container HEALTHCHECK]                              │
+│                                                                              │
+│  ┌──────────────── LOOPBACK ONLY ────────────────────────────────────────┐   │
+│  │ [Admin API]  admin.address, e.g. 127.0.0.1:9901/TCP                   │   │
+│  │ - Protocol: HTTP   Encryption: NONE   Auth: NONE                      │   │
+│  │ - GET /api/stats, GET /api/pipelines                                  │   │
+│  │ - GET/PUT /api/log-level            (mutating)                        │   │
+│  │ - GET/PUT/DELETE /api/kv/{store}[/{key}]   (mutating)                 │   │
+│  │ - Non-loopback Host header -> 421 (DNS rebinding defense)             │   │
+│  │ - Non-loopback bind requires insecure_options.allow_public_admin      │   │
+│  │ [Local operator] ──► 9901/TCP HTTP, plaintext, no auth                │   │
+│  └───────────────────────────────────────────────────────────────────────┘   │
+│         │                                                                    │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL / UPSTREAM SERVICES                                                │
+│                                                                              │
+│  [Upstream clusters]                                                         │
+│  - Port: configured   Protocol: HTTP/1.1, HTTP/2, gRPC, TCP                  │
+│  - Encryption: optional TLS (system trust store or cluster CA;               │
+│    optional mTLS / SPIFFE ID pinning)                                        │
+│  - Auth: optional client cert / injected credential (env var or literal)     │
+│  - Purpose: proxied traffic + active health checks                           │
+│                                                                              │
+│  [Sub-request destinations]  HTTP, optional TLS,                             │
+│     authority-bound deferred credentials (guardrails / policy callouts)      │
+│  [OTLP collector]  gRPC or HTTP protobuf, optional TLS, no auth (traces)     │
+│  [Syslog / file sinks]  UDP/TCP/Unix, no encryption, no auth (access logs)   │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- None. Praxis does not call the Kubernetes API; no ClusterRoles, Roles or
+  bindings ship in the repository.
+
+Service Mesh Configuration:
+- None shipped. Praxis acts as the gateway / sidecar data plane itself
+  (ingress, egress, east/west sidecar, security gateway shapes).
+
+Secrets:
+- Listener/cluster TLS certs + keys (PEM files at config paths) - mounted by
+  deployer; hot-reloaded on file change (config-reload feature)
+- Credential injection values (env var or literal config) - upstream API keys;
+  wrapped with secrecy/zeroize; no rotation
+- Policy API keys / JWKS (config, files, fetched JWKS) - JWKS refreshed by
+  Policy engine
+
+Crypto / FIPS:
+- Single rustls crypto provider: rustls-openssl (Pingora fork) over system
+  libcrypto.so.3. No ring / aws-lc-rs provider; missing provider = startup fail.
+- PRAXIS_REQUIRE_FIPS=truthy -> TLS config construction fails unless rustls
+  reports FIPS mode.
+- FIPS image (Containerfile.fips, UBI 9 minimal, OPENSSL_NO_VENDOR=1,
+  features pingora,config-reload,admin-api) EXCLUDES Policy engine:
+  JWT / API-key / DPoP policies absent unless policy-*-fips profile selected.
+- Standard image (Containerfile, Alpine/musl) is NOT FIPS-capable and its
+  default Policy bundle uses RustCrypto (not FIPS-validated).
+- ring and aws-lc-rs appear in workspace Cargo.lock (test / weak deps);
+  cargo auditable -Zsbom manifest + `cargo xtask fips report` verify the build.
+
+Security Findings / Review Items:
+1. Admin API (9901) has NO authentication; protection relies solely on
+   loopback bind. allow_public_admin or exposing 9901 = unauthenticated
+   control plane (KV store writes, log-level changes).
+2. Health/metrics listener (9902) unauthenticated; /metrics exposure must be
+   restricted with NetworkPolicy when bound non-loopback.
+3. HTTP engine and TLS provider both come from the quixotic-plecostomus-*
+   fork; security fixes depend on fork maintenance. tokio pinned ~1.53.3.
+4. No NetworkPolicy, Konflux Dockerfiles, rpms.lock.yaml or Hermeto prefetch
+   on this branch; cargo-auditable fetched from crates.io at build time.
+5. All tenants' credentials live in one process / one YAML config; in-memory
+   KV stores are shared across listeners.

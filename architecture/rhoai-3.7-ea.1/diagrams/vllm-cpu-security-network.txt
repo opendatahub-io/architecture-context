@@ -1,0 +1,128 @@
+vllm-cpu (odh-vllm-cpu-rhel9) - Security Network Diagram
+Source: architecture/rhoai-3.7-ea.1/vllm-cpu.md (branch rhoai-3.7-ea.1, commit 6c24ce6, vLLM 0.24.0)
+Scope: This repository ships only the engine image. KServe and odh-model-controller ServingRuntime
+templates (vllm-cpu-runtime-template, vllm-cpu-x86-runtime-template) own the Service, exposure and
+platform auth.
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                         │
+│  [External Client]                                                      │
+│         │                                                               │
+│         │ Port: 443/TCP                                                 │
+│         │ Protocol: HTTPS                                               │
+│         │ Encryption: TLS                                               │
+│         │ Auth: Platform-defined (Route/Gateway/auth proxy)             │
+│         ▼                                                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│  PLATFORM INGRESS (not defined in this repo)                            │
+│                                                                         │
+│  [Route / Gateway / KServe Service]                                     │
+│  - Expected enforcement point for authN/authZ                           │
+│         │                                                               │
+│         │ Port: 8000/TCP                                                │
+│         │ Protocol: HTTP (HTTPS only if --ssl-certfile/--ssl-keyfile)   │
+│         │ Encryption: None by default                                   │
+│         │ Auth: Bearer API key (opt-in via --api-key / VLLM_API_KEY)    │
+│         │       guards only /v1/*, /v2/*, /inference/*                  │
+│         ▼                                                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│  CLUSTER INTERNAL - Namespace: {user-namespace}                         │
+│                                                                         │
+│  [Predictor pod: odh-vllm-cpu-rhel9]                                    │
+│  - Image: quay.io/rhoai/odh-vllm-cpu-rhel9:rhoai-3.7-ea.1               │
+│  - Base: registry.redhat.io/ubi9/ubi-minimal-pqc (digest pinned)        │
+│  - Arch: linux/ppc64le, linux/s390x                                     │
+│  - User: UID 2000, GID 0                                                │
+│  - ServiceAccount: KServe default (none defined in repo)                │
+│  - Entrypoint: python -m vllm.entrypoints.openai.api_server             │
+│                                                                         │
+│    uvicorn API server  0.0.0.0:8000/TCP                                 │
+│      - CORS: allow_origins=*, methods/headers *, credentials off        │
+│      - TLS (optional): --ssl-keyfile/--ssl-certfile/--ssl-ca-certs,     │
+│        --ssl-cert-reqs (default CERT_NONE), --ssl-ciphers,              │
+│        --enable-ssl-refresh; no min TLS version (system policy)         │
+│         │                                                               │
+│         │ ZeroMQ local IPC, no encryption, no auth (in-pod)             │
+│         ▼                                                               │
+│    Engine core process (CPU: torch 2.11 + csrc C++ kernels)             │
+│                                                                         │
+│    [Not active] gRPC VllmEngine 50051/TCP - add_insecure_port,          │
+│                 reflection on, no auth; smg-grpc-servicer not installed │
+│    [Not active] DP supervisor /ready,/readyz 9256/TCP HTTP, no auth     │
+│                 (multi-port external-LB data-parallel mode only)        │
+│                                                                         │
+│  [Prometheus / user workload monitoring]                                │
+│         │ Port: 8000/TCP  Protocol: HTTP  Encryption: None  Auth: None  │
+│         └──────────────► GET /metrics                                   │
+│                                                                         │
+│         │ (pod egress)                                                  │
+│         │ Port: 443/TCP                                                 │
+│         │ Protocol: HTTPS                                               │
+│         │ Encryption: TLS (system OpenSSL, PQC crypto policy)           │
+│         ▼                                                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES (runtime egress)                                     │
+│                                                                         │
+│  [Hugging Face Hub - huggingface.co]  443/TCP TLS, Auth: optional       │
+│                                       HF_TOKEN (HF_HUB_OFFLINE=0)       │
+│  [S3-compatible storage]              443/TCP TLS (tensorizer), Auth:   │
+│                                       S3_ACCESS_KEY_ID /                │
+│                                       S3_SECRET_ACCESS_KEY              │
+│  [ModelScope]                         443/TCP TLS, Auth: optional       │
+│                                       MODELSCOPE_API_TOKEN              │
+│  [Usage stats endpoint]               Disabled (VLLM_NO_USAGE_STATS=1)  │
+└─────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│  BUILD-TIME EGRESS (Konflux, hermetic: false)                           │
+│  - wheels.developerfirst.ibm.com (IBM DevPI)                            │
+│  - packages.redhat.com (stale rhoai/3.5-EA2/cpu-ubi9 index, ppc64le)    │
+│  - download.pytorch.org, pypi.org (s390x)                               │
+│  - github.com (git clone source builds), sh.rustup.rs (curl | sh)       │
+│  - dl.fedoraproject.org (EPEL RPM)                                      │
+│  - Resolution: --index-strategy unsafe-best-match                       │
+└─────────────────────────────────────────────────────────────────────────┘
+
+Endpoint Auth Summary (port 8000/TCP):
+- Bearer (opt-in):  /v1/chat/completions[/batch|/render|/derender], /v1/completions[...],
+                    /v1/responses[/{id}[/cancel]], /v1/messages[/count_tokens], /v1/models,
+                    /v1/embeddings, /v1/score, /v1/rerank, /v1/audio/*, /v1/realtime (WS),
+                    /v1/load_lora_adapter, /v1/unload_lora_adapter, /v2/embed, /v2/rerank,
+                    /inference/v1/generate
+- Never guarded:    /abort_requests, /tokenize, /detokenize, /tokenizer_info, /pooling,
+                    /classify, /score, /rerank, /generative_scoring, /invocations, /ping,
+                    /scale_elastic_ep, /is_scaling_elastic_ep, /start_profile, /stop_profile,
+                    /health, /load, /version, /metrics, /docs
+- Middleware: SHA-256 digest + secrets.compare_digest (constant time); OPTIONS exempt
+
+RBAC Summary:
+- No ClusterRoles, Roles or bindings defined in this repository.
+- The engine makes no Kubernetes API calls; pod identity comes from KServe.
+
+Secrets (environment variables; no Kubernetes Secret objects in repo):
+- VLLM_API_KEY                         - Bearer API key (overridden by --api-key); ServingRuntime/ISVC env; no rotation
+- HF_TOKEN                             - Hugging Face gated model access; deployer; no rotation
+- S3_ACCESS_KEY_ID / S3_SECRET_ACCESS_KEY - tensorizer S3 loading; deployer; no rotation
+- MODELSCOPE_API_TOKEN                 - ModelScope download; deployer; no rotation
+- EXA_API_KEY                          - MCP/demo web-search tool; deployer; no rotation
+- OPENAI_API_KEY, GH_TOKEN/GITHUB_TOKEN - benchmark/build tooling only
+
+Crypto / FIPS:
+- OpenSSL from UBI 9 minimal PQC base; Python ssl/hashlib/secrets use system OpenSSL
+- No explicit FIPS opt-in in vLLM or Dockerfile
+- MD5 config hashing falls back to SHA-256 under FIPS (vllm/utils/hashing.py)
+- hf3fs_connector.py:1012 uses hashlib.md5 without usedforsecurity=False (optional connector)
+
+Build Hermeticity:
+- RPM lock: none | Python lock: none (ranges) | Artifacts: git clone / curl | Hermeto: not used
+- Not AIPCC-based; migration target aipcc-cpu-torch2.11-el9.8-app (overlay 0017)
+
+Key Risks:
+1. UV_EXTRA_INDEX_URL (IBM DevPI) + UV_INDEX_STRATEGY=unsafe-best-match persisted in RUNTIME
+   image env (Dockerfile.konflux.cpu:85-86) - dependency-confusion risk for in-pod installs.
+2. Non-hermetic build from multiple third-party indexes and GitHub sources.
+3. vLLM auth is opt-in and path-scoped; compute and operational root routes (/score, /pooling,
+   /scale_elastic_ep, /start_profile) are unauthenticated - platform layer must enforce.
+4. Plain HTTP on 8000 by default; permissive CORS (*).
+5. Unauthenticated /metrics.

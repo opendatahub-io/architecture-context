@@ -1,0 +1,33 @@
+sequenceDiagram
+    participant Client as Client / llm-d router (EPP)
+    participant Sim as vllm-sim<br/>8000/TCP HTTP + gRPC h2c<br/>TLS optional (HTTP only)
+    participant Render as vLLM render sidecar<br/>localhost:8082/TCP HTTP
+    participant KVSub as KV-cache indexer / zmq-listener<br/>5557/TCP ZMQ
+    participant Prom as Prometheus / EPP scraper
+    participant Harness as Test harness
+
+    Note over Client,Sim: Flow 1: HTTP inference (no auth, plaintext unless TLS flags set)
+    Client->>Sim: POST /v1/chat/completions (or /v1/completions, /v1/responses, /v1/messages)<br/>HTTP 8000/TCP, Auth: none
+    opt --render-url set
+        Sim->>Render: POST render (tokenize)<br/>HTTP 8082/TCP localhost, no TLS, no auth
+        Render-->>Sim: token IDs
+    end
+    Sim->>Sim: Simulate TTFT / inter-token latency,<br/>update simulated KV cache
+    Sim-->>Client: JSON response or SSE stream<br/>x-inference-pod / x-inference-namespace headers
+
+    Note over Client,Sim: Flow 2: gRPC generate (vLLM engine, h2c only)
+    Client->>Sim: VllmEngine/Generate<br/>gRPC h2c 8000/TCP via cmux, no creds
+    Sim-->>Client: Server-streaming GenerateResponse
+
+    Note over Sim,KVSub: Flow 3: KV-cache event publication
+    Sim->>KVSub: ZMQ PUB msgpack KV events (BlockStored/BlockRemoved)<br/>5557/TCP, no CURVE, no auth
+    opt replay endpoint enabled
+        KVSub->>Sim: ZMQ request for buffered batches (ROUTER)
+        Sim-->>KVSub: Replayed event batches
+    end
+
+    Note over Prom,Harness: Flow 4: Metrics and runtime reconfiguration
+    Prom->>Sim: GET /metrics<br/>HTTP 8000/TCP, no auth
+    Sim-->>Prom: vLLM-compatible metrics (incl. fake metrics)
+    Harness->>Sim: POST /admin/config<br/>HTTP 8000/TCP, no auth
+    Sim-->>Harness: Updated latency / failure-injection / fake-metric config

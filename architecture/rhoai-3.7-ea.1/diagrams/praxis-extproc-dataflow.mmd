@@ -1,0 +1,36 @@
+sequenceDiagram
+    participant Client as Client
+    participant GW as maas-default-gateway<br/>Istio Envoy, openshift-ingress<br/>443/TCP HTTPS
+    participant Pre as payload-pre-processing<br/>9004/TCP gRPC TLS
+    participant Kuadrant as Kuadrant Wasm<br/>Authorino / Limitador
+    participant Post as payload-processing<br/>9004/TCP gRPC TLS
+    participant Backend as KServe LLMInferenceService<br/>model backend
+    participant Prom as Prometheus<br/>redhat-ods-monitoring
+    participant API as Kubernetes API<br/>443 or 6443/TCP
+    participant Kubelet as kubelet
+
+    Note over Client,Backend: Flow 1 - Inference request (both ext_proc filters fail closed, 300s timeout)
+    Client->>GW: HTTPS/443 TLS (gateway cert)<br/>API key / Bearer token
+    GW->>Pre: ext_proc ipp-pre Process stream<br/>gRPC/HTTP2 TLS, service-CA, SNI/SAN pinned<br/>No client auth (server TLS only)
+    Pre-->>GW: Strip caller X-Gateway-Model-Name, set it from body /model<br/>resolve model provider (BUFFERED request body)
+    GW->>Kuadrant: In-process Wasm filter
+    Kuadrant-->>GW: Caller authenticated, x-maas-* identity headers set, rate limit applied
+    GW->>Post: ext_proc ipp Process stream<br/>gRPC/HTTP2 TLS (service-CA)
+    Post-->>GW: Strip authorization, x-api-key, x-maas-*<br/>add request ID (skipped on maas-api routes)
+    GW->>Backend: Router (optionally via EPP ext_proc)<br/>HTTP/HTTPS per backend, credentials removed
+    Backend-->>GW: Model response
+    GW->>Post: BUFFERED response headers/body<br/>gRPC TLS 9004
+    Post-->>GW: Response mutations
+    GW-->>Client: Response
+    Note over GW,Post: Body over 10 MiB gets a 413 ImmediateResponse<br/>gRPC messages over 11Mi are rejected by tonic
+
+    Note over Prom,API: Flow 2 - Metrics scrape
+    Prom->>Post: GET /metrics 9090/TCP HTTP plaintext<br/>Bearer SA token
+    Post->>API: TokenReview + SubjectAccessReview<br/>HTTPS TLS (OpenSSL), pod SA token
+    API-->>Post: Authenticated / allowed get on /metrics
+    Post-->>Prom: 200 metrics, or 401/403
+
+    Note over Kubelet,Post: Flow 3 - Startup and readiness
+    Post->>Post: Install OpenSSL provider, check FIPS,<br/>load /etc/praxis/*.yaml + /etc/tls/private, build pipeline
+    Kubelet->>Post: grpc.health.v1 Check 50052/TCP plaintext
+    Post-->>Kubelet: SERVING once pipeline built and FIPS met<br/>NOT_SERVING during drain

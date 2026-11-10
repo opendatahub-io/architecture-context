@@ -1,0 +1,148 @@
+TrustyAI Service (trustyai-service) - Security Network Diagram
+Source: architecture/rhoai-3.7-ea.1/trustyai-service.md
+Version: ac7e3ab (branch rhoai-3.7-ea.1, image VERSION 0.31.0+rhaiv.1)
+Image: quay.io/rhoai/odh-trustyai-service-py-rhel9 (AIPCC cpu-torch2.13-el9.8 base, USER 1001)
+
+NOTE: This repo ships no Kubernetes manifests. Service, Route, kube-rbac-proxy,
+NetworkPolicy, ServiceMonitor and RBAC are created by trustyai-service-operator.
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                        │
+│                                                                              │
+│  [User / ODH Dashboard]                                                      │
+│         │                                                                    │
+│         │ Port: 443/TCP                                                      │
+│         │ Protocol: HTTPS                                                    │
+│         │ Encryption: TLS                                                    │
+│         │ Auth: Bearer token (OpenShift OAuth / SA token)                    │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (operator-managed)                                                  │
+│                                                                              │
+│  [OpenShift Route] → kube-rbac-proxy Service port                            │
+│         │                                                                    │
+│         │ Protocol: HTTPS, TLS                                               │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  NAMESPACE: user namespace (one instance per TrustyAIService CR)             │
+│                                                                              │
+│  ┌── TrustyAI Service Pod ───────────────────────────────────────────────┐  │
+│  │                                                                        │  │
+│  │  [kube-rbac-proxy sidecar]                                             │  │
+│  │  - AuthN: TokenReview  AuthZ: SubjectAccessReview (proxy-defined)      │  │
+│  │         │                                                              │  │
+│  │         │ Port: 8081/TCP (127.0.0.1 loopback only)                     │  │
+│  │         │ Protocol: HTTP                                               │  │
+│  │         │ Encryption: None (pod-local)                                 │  │
+│  │         │ Auth: already authorized by proxy                            │  │
+│  │         ▼                                                              │  │
+│  │  [Main app - FastAPI/Hypercorn, HTTP/2 + HTTP/1.1 via ALPN]            │  │
+│  │  - 127.0.0.1:8081 HTTP   (authenticated path via proxy)                │  │
+│  │  - 0.0.0.0:4443   HTTPS  (only if /etc/tls/internal/tls.{crt,key})     │  │
+│  │       TLS_POLICY=system (default, OS crypto policy) or                 │  │
+│  │       TLS_POLICY=configured (min TLSv1.2/1.3, TLS1.2 ciphers, 1 curve) │  │
+│  │       Fail-closed on invalid TLS settings                              │  │
+│  │       !! NO AUTH in application on 4443 - relies on NetworkPolicy !!   │  │
+│  │  - Middleware: CORS allow_origins=* + allow_credentials=True,          │  │
+│  │                gzip decompress (16 MB cap), trailing-slash strip       │  │
+│  │                                                                        │  │
+│  │  [health_app - FastAPI/Hypercorn]                                      │  │
+│  │  - 0.0.0.0:8080 HTTP plaintext                                         │  │
+│  │  - Routes: GET /q/health, /q/health/ready, /q/health/live              │  │
+│  │            POST /  (KServe CloudEvents ingest)                         │  │
+│  │            POST /consumer/kserve/v2  (ModelMesh ingest)                │  │
+│  │  !! NO AUTH, NO TLS - unauthenticated data writes; relies on           │  │
+│  │     operator NetworkPolicy !!                                          │  │
+│  │                                                                        │  │
+│  │  [Prometheus scheduler - in-process, every 30s]                        │  │
+│  └────────────────────────────────────────────────────────────────────────┘  │
+│        ▲                         ▲                          ▲                │
+│        │ 8080/TCP HTTP           │ 8080/TCP HTTP            │ 4443/TCP HTTPS │
+│        │ None / No auth          │ None / No auth           │ TLS            │
+│        │                         │                          │ per            │
+│  [KServe InferenceService   [ModelMesh payload        [Prometheus / UWM]     │
+│   logger (CloudEvents,       processor]                 ServiceMonitor       │
+│   optionally via Knative)]                              (operator)           │
+│                                                                              │
+│  [kubelet] → 8080/TCP HTTP /q/health* (no auth)                              │
+│                                                                              │
+│  [PVC] ← file I/O, HDF5 (STORAGE_DATA_FOLDER / STORAGE_DATA_FILENAME)        │
+│         │                                                                    │
+│         │ Egress (SERVICE_STORAGE_FORMAT=DATABASE/MARIA/POSTGRESQL)          │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL / SHARED SERVICES (optional)                                       │
+│                                                                              │
+│  [MariaDB]     Port: 3306/TCP (DATABASE_PORT)                                │
+│                Encryption: TLS, ssl_verify_cert=True if /etc/tls/db/ca.crt   │
+│                Auth: username/password                                       │
+│                                                                              │
+│  [PostgreSQL]  Port: 5432/TCP (DATABASE_PORT)                                │
+│                Encryption: sslmode=verify-full if /etc/tls/db/ca.crt         │
+│                Auth: username/password                                       │
+│                                                                              │
+│  !! RISK: DATABASE_ALLOW_INSECURE_TLS is treated as TRUE when unset. With    │
+│     no CA mounted and DATABASE_TLS_CA_CERT not set, DB connections are made  │
+│     WITHOUT certificate verification. A configured-but-missing CA fails      │
+│     closed. !!                                                               │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+Listener Summary:
+  Port       Bind        App         Proto  TLS                         Auth
+  8081/TCP   127.0.0.1   main app    HTTP   None (loopback)             kube-rbac-proxy (external)
+  4443/TCP   0.0.0.0     main app    HTTPS  TLS (system / configured)   NONE
+  8080/TCP   0.0.0.0     health_app  HTTP   None                        NONE
+  (Container EXPOSE 8080 4443. No gRPC server; KServe v2 .proto used only for decoding.)
+
+Authentication & Authorization:
+- All main-app routes via 8081: Bearer token, enforced by kube-rbac-proxy sidecar (SAR)
+- All main-app routes via 4443: no auth middleware; relies on network isolation
+- /, /consumer/kserve/v2, /q/health* on 8080: no auth; relies on NetworkPolicy
+- CORS: Starlette CORSMiddleware allow_origins=["*"], allow_credentials=True,
+  all methods/headers
+- Feature flags (TRUSTYAI_ENABLE_*) read at import; disabled routes return 404
+- Explainers (LIME/SHAP/CF/TSSaliency/PDP) disabled by default; return 501
+
+RBAC Summary:
+- No ClusterRoles / Roles / RoleBindings defined in this repository.
+- The service does not call the Kubernetes API.
+- kube-rbac-proxy RBAC (tokenreviews create, subjectaccessreviews create) is
+  provisioned by trustyai-service-operator.
+
+Service Mesh Configuration:
+- None defined. No PeerAuthentication / AuthorizationPolicy in repo.
+
+NetworkPolicy:
+- None in repo. Deployer (operator) must restrict 8080 and 4443
+  (docs/server-tls.md: "Network exposure and plaintext exceptions must be
+  evaluated by the deployer").
+
+Secrets:
+- Serving cert (kubernetes.io/tls) mounted at /etc/tls/internal/tls.crt, tls.key
+    HTTPS listener on 4443; OpenShift service-ca via operator; auto-rotated,
+    service restart required to reload
+- DB CA (file mount) at /etc/tls/db/ca.crt - verify DB server cert; operator/user; no rotation
+- DATABASE_USERNAME / QUARKUS_DATASOURCE_USERNAME (env from Secret) - DB credentials
+- DATABASE_PASSWORD / QUARKUS_DATASOURCE_PASSWORD (env from Secret) - DB credentials
+- TRUSTYAI_MIGRATION_SOURCE_URL / TRUSTYAI_MIGRATION_TARGET_URL (env, may embed
+    credentials) - trustyai-migrate DSNs
+
+Crypto / FIPS:
+- Python stdlib ssl / hashlib backed by system OpenSSL (AIPCC EL9.8 base)
+- No cryptography, PyJWT or pycryptodome
+- create_default_context(Purpose.CLIENT_AUTH), OP_NO_COMPRESSION
+- Python cannot set TLS 1.3 suites or multiple key-exchange groups; docs
+  recommend an external terminator and removing 4443 for such TLS profiles
+- MD5 for UUIDv3 metric ids (usedforsecurity=False, FIPS-safe)
+- SHA-256 for namespace table tokens and migration content digests
+- No explicit FIPS opt-in; relies on base image OpenSSL / system crypto policy
+
+Migration (trustyai-migrate):
+- Source: PVC HDF5/CSV or MariaDB legacy tables (3306/TCP, TLS CERT_REQUIRED if CA)
+- Target: SQL DB canonical schema (asyncmy/asyncpg, 3306/5432, TLS + hostname check if CA)
+
+Supply Chain:
+- Hermetic Konflux build, Hermeto pip prefetch, --no-deps --require-hashes
+- Index: RHEL AI PyPI cpu-torch2.13-el9.8-test channel (test channel; track for GA)
+- psycopg[c] links base image libpq; inherited uv binary removed (RHOAIENG-97373)
+- Architectures: x86_64, arm64, ppc64le, s390x

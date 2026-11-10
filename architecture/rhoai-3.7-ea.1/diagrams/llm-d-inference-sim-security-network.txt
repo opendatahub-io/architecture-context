@@ -1,0 +1,132 @@
+llm-d-inference-sim - Security Network Diagram (RHOAI 3.7 EA.1)
+Source: architecture/rhoai-3.7-ea.1/llm-d-inference-sim.md
+Role: test/development utility (GPU-free vLLM stand-in), NOT a production inference runtime.
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted) - only if the deployer exposes the simulator      │
+│                                                                         │
+│  [External Client]                                                      │
+│         │                                                               │
+│         │ Port: 80/TCP or 443/TCP (Helm Ingress, disabled by default)   │
+│         │       or NodePort (deploy/ sample, dev/KIND clusters)         │
+│         │ Protocol: HTTP / HTTPS                                        │
+│         │ Encryption: edge TLS only if ingress.tls is configured        │
+│         │ Auth: NONE                                                    │
+│         ▼                                                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (optional)                                                     │
+│                                                                         │
+│  [Ingress <release>-llm-d-inference-sim]  host llm-d-inference-sim.local│
+│  [Service vllm-sim]  NodePort  8000/TCP -> 8000                         │
+│  [Service <release>-llm-d-inference-sim]  ClusterIP 8001/TCP -> 8001    │
+│         │                                                               │
+│         │ Port: 8000/TCP (sample) / 8001/TCP (Helm)                     │
+│         │ Protocol: HTTP/1.1 + gRPC (h2c) multiplexed by cmux           │
+│         │ Encryption: None by default; TLS 1.2+ when --ssl-certfile/    │
+│         │             --ssl-keyfile or --self-signed-certs is set       │
+│         │ Auth: NONE                                                    │
+│         ▼                                                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│  CLUSTER INTERNAL (no service mesh, no NetworkPolicy shipped)           │
+│                                                                         │
+│  Callers on the same network:                                           │
+│   - llm-d router / EPP          -> inference HTTP/gRPC, /metrics        │
+│   - llm-d P/D routing sidecar   -> GET /query (Mooncake bootstrap)      │
+│   - Prometheus                  -> GET /metrics                         │
+│   - Test harness                -> GET/POST /admin/config               │
+│         │                                                               │
+│         ▼                                                               │
+│  [vllm-sim Pod]                                                         │
+│  - Namespace: deployer-chosen test/dev namespace                        │
+│  - ServiceAccount: default (no Kubernetes API access, no RBAC)          │
+│  - Image: ghcr.io/llm-d/llm-d-inference-sim (v0.11.2 samples, Helm dev) │
+│  - Base: gcr.io/distroless/static:nonroot, UID 65532                    │
+│                                                                         │
+│   [llm-d-inference-sim container]                                       │
+│   - Listener: tcp4 :8000 (port + rank per data-parallel rank)           │
+│   - HTTP (fasthttp): /v1/chat/completions, /v1/completions,             │
+│     /v1/responses, /v1/messages(+/count_tokens), /v1/embeddings,        │
+│     /v1/audio/speech, /v1/images/generations, /v1/models, /tokenize,    │
+│     /metrics, /health, /health/ready, /admin/config (GET/POST)          │
+│     vLLM only: /inference/v1/generate, */render, */derender,            │
+│     /v1/load_lora_adapter, /v1/unload_lora_adapter, /query, /sleep,     │
+│     /wake_up, /is_sleeping, /v1/systemone, /v1/decisions                │
+│   - gRPC (h2c): VllmEngine (Generate, Embed, HealthCheck, Abort,        │
+│     GetModelInfo, GetServerInfo) + ServerReflection                     │
+│     No transport credentials. With HTTP TLS enabled, gRPC is            │
+│     UNREACHABLE (TLS ClientHello never matches cmux HTTP/2 matcher).    │
+│   - Max request body: 4 MB default (1-512 MB)                           │
+│         │                                                               │
+│         │ Port: 8082/TCP (localhost)                                    │
+│         │ Protocol: HTTP (render/tokenize)                              │
+│         │ Encryption: None                                              │
+│         │ Auth: None                                                    │
+│         ▼                                                               │
+│   [vllm-render native sidecar]  vllm/vllm-openai-cpu:v0.21.0            │
+│   - HF_TOKEN passed as PLAIN ENV VALUE (not a Secret reference)         │
+│                                                                         │
+│  [llm-d-inference-sim container]                                        │
+│         │                                                               │
+│         │ Port: 5557/TCP (default tcp://127.0.0.1:5557; bind if         │
+│         │       wildcard endpoint, otherwise dial)                      │
+│         │ Protocol: ZMQ PUB/SUB, msgpack payload                        │
+│         │ Encryption: None (no CURVE)                                   │
+│         │ Auth: None                                                    │
+│         ▼                                                               │
+│  [llm-d KV-cache indexer] / [zmq-listener debug pod]                    │
+│                                                                         │
+│  Optional: ZMQ ROUTER replay socket (bind, configured endpoint),        │
+│            no encryption, no auth                                       │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                      │
+│                                                                         │
+│  [huggingface.co]  443/TCP HTTPS, TLS (Go/system defaults)              │
+│   - From vllm-render sidecar: tokenizer files, Bearer HF_TOKEN optional │
+│   - From dataset-tool CLI (offline, not deployed): dataset download,    │
+│     Bearer HF_TOKEN optional                                            │
+│                                                                         │
+│  [--dataset-url host]  443/TCP typical, HTTP/HTTPS                      │
+│   - Optional SQLite dataset download at simulator startup               │
+│   - TLS with system trust store if https; no auth                       │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- None. The simulator makes no Kubernetes API calls (controller-runtime is
+  imported only for logging helpers). No ClusterRoles, Roles or bindings.
+
+Authentication & Authorization:
+- All HTTP routes (inference, admin, LoRA, sleep, metrics): NONE
+- gRPC VllmEngine + reflection: NONE, no transport credentials
+- ZMQ PUB / ROUTER: NONE, no CURVE
+- Rely on namespace/network isolation; never expose outside a trusted
+  test namespace.
+
+Service Mesh Configuration:
+- None shipped (no PeerAuthentication, AuthorizationPolicy or NetworkPolicy).
+
+TLS Configuration (optional, HTTP only):
+- crypto/tls, MinVersion TLS 1.2, max unconstrained (TLS 1.3)
+- TLS 1.2 suites: ECDHE AES-128/256-GCM, CHACHA20-POLY1305 (non-FIPS)
+- Cert sources: mounted cert/key files (fsnotify hot-reload) or in-process
+  self-signed RSA-4096 cert valid 10 years (--self-signed-certs)
+- No client-cert (mTLS) verification
+
+Secrets:
+- No Kubernetes Secrets referenced.
+- HF_TOKEN (render sidecar) - plain env value via envsubst, visible in pod spec
+- TLS cert/key files (--ssl-certfile/--ssl-keyfile) - mounted files, manual or
+  cert-manager (operator choice), hot-reloaded on change
+
+FIPS / Build:
+- CGO_ENABLED=0 static Go binary, distroless base, no OpenSSL, no
+  strictfipsruntime -> would fail check-payload as built
+- No .konflux Dockerfile, no Hermeto prefetch, no RPM lock files
+
+Key Risks:
+1. Unauthenticated POST /admin/config changes latency, failure injection and
+   fake metrics at runtime.
+2. Unauthenticated LoRA load/unload and sleep/wake_up endpoints.
+3. HF_TOKEN in plain env in sample manifests.
+4. gRPC plaintext-only; disappears silently when TLS is enabled.
+5. ZMQ KV events unauthenticated/unencrypted; can be spoofed or sniffed by
+   anything on the network path to the KV-cache indexer.

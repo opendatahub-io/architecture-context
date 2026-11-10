@@ -1,0 +1,127 @@
+llm-d-planner: Security Network Diagram (RHOAI 3.7-ea.1)
+Source: architecture/rhoai-3.7-ea.1/llm-d-planner.md (commit 89edc10, branch main)
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                        │
+│                                                                              │
+│  [User Browser]                          [Any API client]                    │
+│         │                                       │                            │
+│         │ Port: 443/TCP                         │ Port: 443/TCP              │
+│         │ Protocol: HTTPS                       │ Protocol: HTTPS            │
+│         │ Encryption: TLS (router default)      │ Encryption: TLS            │
+│         │ Auth: NONE                            │ Auth: NONE                 │
+│         ▼                                       ▼                            │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (OpenShift Router)                                                  │
+│                                                                              │
+│  [Route: planner]                        [Route: planner-backend]            │
+│  - 443/TCP → svc/ui:8501                 - 443/TCP → svc/backend:8000        │
+│  - TLS: edge, insecure → Redirect        - TLS: edge, insecure → Redirect    │
+│  - No oauth-proxy/kube-rbac-proxy        - No auth proxy: UNAUTHENTICATED API│
+│  - No Gateway API HTTPRoute (does not follow the RHOAI 3.x ingress pattern)  │
+│         │                                       │                            │
+│         │ Port: 8501/TCP                        │ Port: 8000/TCP             │
+│         │ Protocol: HTTP / WebSocket            │ Protocol: HTTP             │
+│         │ Encryption: NONE (plaintext)          │ Encryption: NONE           │
+│         │ Auth: NONE                            │ Auth: NONE                 │
+│         ▼                                       │                            │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  CLUSTER INTERNAL: namespace "planner" (no service mesh, no NetworkPolicy)   │
+│                                                 │                            │
+│  [ui] (Streamlit)                               │                            │
+│  - Service: ui ClusterIP 8501/TCP               │                            │
+│  - ServiceAccount: default                      │                            │
+│  - Image: quay.io/llm-d-planner/llm-d-planner-ui:latest (runs as root)       │
+│         │                                       │                            │
+│         │ Port: 8000/TCP  Protocol: HTTP        │                            │
+│         │ Encryption: NONE  Auth: NONE          │                            │
+│         ▼                                       ▼                            │
+│  [backend] (FastAPI/uvicorn, --workers 2, replicas: 1)                       │
+│  - Service: backend ClusterIP 8000/TCP                                       │
+│  - ServiceAccount: planner-backend                                           │
+│  - Image: quay.io/llm-d-planner/llm-d-planner-backend:latest (UID 1001)      │
+│  - CORS: allow_origins=["*"], allow_credentials=True                         │
+│  - No auth middleware; DB admin endpoints: optional X-Admin-Password         │
+│  - Storage: SQLite /app/db/planner.db on RWO PVC                             │
+│      │            │                  │                  │                    │
+│      │ 11434/TCP  │ 8443/TCP         │ 6443/TCP         │ 443/TCP            │
+│      │ HTTP       │ HTTPS            │ HTTPS            │ HTTPS              │
+│      │ NONE       │ TLS (service-CA; │ TLS              │ TLS                │
+│      │ No auth    │  verify can be   │ SA token or      │ (see External      │
+│      │            │  disabled)       │ kubeconfig       │  Services)         │
+│      │            │ Bearer token /   │                  │                    │
+│      │            │ SA token         │                  │                    │
+│      ▼            │                  │                  │                    │
+│  [ollama]         │                  │                  │                    │
+│  - Service: ollama ClusterIP 11434/TCP                  │                    │
+│  - ServiceAccount: default; no securityContext          │                    │
+│  - Image: ollama/ollama:latest; 1x nvidia.com/gpu; 20Gi PVC                  │
+│  - Egress: registry.ollama.ai 443/TCP HTTPS (pull granite3.3:2b, no auth)    │
+│                   │                  │                  │                    │
+│                   ▼                  │                  │                    │
+│  ── namespace "rhoai-model-registries" ──               │                    │
+│  [Model Catalog]                     │                  │                    │
+│  - model-catalog.rhoai-model-registries.svc:8443        │                    │
+│  - Source: redhat_ai_validated_models                   │                    │
+│  - Ingress allowed by NetworkPolicy (planner backend → 8443)                 │
+│  - Authz enforced catalog-side (kube-rbac-proxy / SAR)  │                    │
+│                                      ▼                  │                    │
+│  [Kubernetes API Server] 6443/TCP                       │                    │
+│  - list nodes (nvidia.com/gpu.product) via kubernetes client                 │
+│  - kubectl create namespace / apply -f - / get / delete (deploy endpoints;   │
+│    fails in shipped config: no kubectl in image, RBAC only list nodes)       │
+│                                                         │                    │
+├─────────────────────────────────────────────────────────┼────────────────────┤
+│  EXTERNAL SERVICES (egress)                             ▼                    │
+│                                                                              │
+│  [Vertex AI - *.googleapis.com]   443/TCP HTTPS TLS  GCP SA creds (ADC)      │
+│  [OpenAI-compatible API]          443/TCP HTTPS TLS  Bearer API key          │
+│  [huggingface.co]                 443/TCP HTTPS TLS  HF_TOKEN (optional)     │
+│  [artificialanalysis.ai]          443/TCP HTTPS TLS  AA_API_KEY              │
+│  [registry.ollama.ai] (ollama)    443/TCP HTTPS TLS  None                    │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+Sensitive Unauthenticated Endpoints (backend 8000/TCP, exposed via Route):
+- POST   /api/v1/deploy-bundle-to-cluster  arbitrary YAML + caller-chosen namespace
+                                           → kubectl create namespace / apply -f -
+                                           (confused-deputy risk under backend identity)
+- DELETE /api/v1/deployments/{id}          deletes InferenceService
+- PUT    /api/v1/deployment-mode           global simulator/production toggle
+- PUT    /api/v1/quality/auto-update       global setting
+- POST   /api/v1/db/upload-benchmarks, /db/reset
+                                           X-Admin-Password (hmac.compare_digest), only
+                                           enforced if DB_ADMIN_PASSWORD non-empty
+                                           (shipped Secret: "")
+
+RBAC Summary:
+- ClusterRole: planner-gpu-reader
+  - API Groups: "" (core)
+  - Resources: nodes
+  - Verbs: list
+- ClusterRoleBinding: planner-gpu-reader → SA planner/planner-backend
+- ui and ollama use the namespace "default" SA (no extra RBAC)
+- NOT granted: namespaces create, inferenceservices apply/get/delete, pods get/list
+
+Service Mesh Configuration:
+- None. No PeerAuthentication / AuthorizationPolicy. All in-namespace traffic is plaintext HTTP.
+
+Network Policies:
+- planner namespace: none
+- rhoai-model-registries: ingress allow from planner backend pods → 8443/TCP
+  (deploy/kubernetes/networkpolicy-model-catalog.yaml)
+
+Secrets:
+- planner-secrets (Opaque), manual empty template, no rotation:
+  hf-token, model-catalog-token, vertex-project-id, vertex-region,
+  gcp-credentials-json, openai-api-key, openai-base-url, db-admin-password
+- planner-backend projected SA token (kubelet-managed rotation): Model Catalog
+  Bearer fallback; Kubernetes API
+- planner-service-ca (ConfigMap, service.beta.openshift.io/inject-cabundle):
+  /etc/pki/service-ca/service-ca.crt, rotated by service-ca operator
+- GCP credentials JSON written to mkstemp temp file for ADC (deleted at exit)
+
+TLS / Crypto:
+- No in-pod server TLS; TLS terminated at Route edge
+- Client TLS: httpx/requests defaults, no min version or cipher config
+- MODEL_CATALOG_VERIFY_SSL=false disables Model Catalog cert verification
+- Base image python:3.14-slim (Debian OpenSSL), not FIPS-validated; no FIPS signals

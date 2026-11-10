@@ -1,0 +1,112 @@
+llm-d-routing-sidecar — Security Network Diagram (SAR)
+Source: architecture/rhoai-3.7-ea.1/llm-d-routing-sidecar.md (commit 78051b8, upstream, deprecated)
+NOTE: The repo is deprecated. RHOAI ships the sidecar from llm-d-inference-scheduler (cmd/pd_sidecar)
+      and injects it into decode pods through KServe LLMInferenceService (config-llm-decode-template).
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                         │
+│  [Client]                                                               │
+│         │ Port: 443/TCP                                                 │
+│         │ Protocol: HTTPS                                               │
+│         │ Encryption: TLS                                               │
+│         │ Auth: Bearer token (Gateway / Kuadrant AuthPolicy, platform)  │
+│         ▼                                                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (Gateway API: Envoy / Istio)                                   │
+│                                                                         │
+│  [Gateway] ── endpoint pick ──> [llm-d EPP]                             │
+│  - EPP selects decode pod + prefill pod                                 │
+│  - EPP sets header x-prefiller-host-port (legacy: x-prefiller-url)      │
+│         │ Port: 8000/TCP                                                │
+│         │ Protocol: HTTPS (default, -secure-proxy=true)                 │
+│         │ Encryption: TLS 1.2+ (self-signed or service-ca cert)         │
+│         │   DestinationRule uses InsecureSkipVerify in P/D mode         │
+│         │ Auth: None                                                    │
+│         ▼                                                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│  TENANT NAMESPACE (pod network; the sidecar does no authentication)     │
+│                                                                         │
+│  ┌──────────────── Decode Pod ─────────────────────────────────┐        │
+│  │ [llm-d-routing-sidecar]  native sidecar (init, Always)      │        │
+│  │ - Listen: 8000/TCP (-port)                                  │        │
+│  │ - Endpoints: GET /health, POST /v1/chat/completions,        │        │
+│  │              POST /v1/completions, / (pass-through)         │        │
+│  │ - Runs as UID 65532, image ubi9/ubi-micro                   │        │
+│  │ - Timeouts: ReadHeader 30s, Idle 300s, no Read/Write limit  │        │
+│  │ - MaxHeaderBytes 1MiB; no request body size limit           │        │
+│  │       │ Port: 8001/TCP (localhost; 8200 in test pod)        │        │
+│  │       │ Protocol: HTTP (HTTPS if -decoder-use-tls)          │        │
+│  │       │ Encryption: None (loopback) by default              │        │
+│  │       │ Auth: None                                          │        │
+│  │       ▼                                                     │        │
+│  │ [vLLM decode container]                                     │        │
+│  └─────────────────────────────────────────────────────────────┘        │
+│         │                                       │                       │
+│         │ (from sidecar)                        │ (from vLLM decode)    │
+│         │ Port: from header (any)               │ Port: e.g. 5557/TCP   │
+│         │ Protocol: HTTP (HTTPS if              │ Protocol: NIXL/UCX    │
+│         │   -prefiller-use-tls)                 │ Encryption: not       │
+│         │ Encryption: None default; TLS 1.2+    │   controlled by       │
+│         │   optional, verify can be skipped     │   the sidecar         │
+│         │ Auth: None                            │ Purpose: KV cache pull│
+│         │ Control: optional SSRF allowlist      │                       │
+│         ▼                                       ▼                       │
+│  [vLLM prefill pods]  (shared across decode pods of the same pool)      │
+│                                                                         │
+│  [Any in-cluster caller] ──8000/TCP──> sidecar  (bypasses Gateway auth) │
+│         │                                                               │
+├─────────┼───────────────────────────────────────────────────────────────┤
+│  KUBERNETES CONTROL PLANE (used only when -enable-ssrf-protection)      │
+│         │ (from sidecar)                                                │
+│         │ Port: 6443/TCP (or in-cluster service 443)                    │
+│         │ Protocol: HTTPS (REST + watch)                                │
+│         │ Encryption: TLS (client-go defaults)                          │
+│         │ Auth: ServiceAccount token / kubeconfig                       │
+│         ▼                                                               │
+│  [kube-apiserver]                                                       │
+│  - LIST/WATCH inferencepools (field selector metadata.name)             │
+│  - LIST/WATCH pods (pool label selector, 30s resync)                    │
+└─────────────────────────────────────────────────────────────────────────┘
+
+Key Risks:
+- SSRF: the prefill target comes from the x-prefiller-host-port request header. SSRF
+  protection is OFF by default (allow all). Any caller that reaches :8000 directly can make
+  the decode pod POST arbitrary bodies to any reachable host, including in other namespaces.
+- When the allowlist is on, it matches host only (pod IP + pod name), so any port on a
+  member pod is reachable. Only the pool informer is waited on, so requests may get 403
+  until the pod cache syncs. Scheme-prefixed header values fail closed (403).
+- No authentication in the sidecar. It relies on the Gateway AuthPolicy and network
+  reachability.
+- TLS certificates are loaded once with no reload. The upstream DestinationRule therefore
+  uses InsecureSkipVerify for Gateway -> sidecar in P/D mode.
+- Egress to the prefiller and decoder is plaintext by default.
+- The cipher list includes ChaCha20-Poly1305 (not FIPS-approved). CGO_ENABLED=0 static
+  build: the image would fail the Konflux check-payload FIPS gate as built here.
+
+RBAC Summary:
+- No ClusterRoles defined.
+- Role: ssrf-allowlist-role (namespaced; file exists but kustomization does not reference it)
+  - API Groups: "" -> pods: get, watch, list
+  - API Groups: inference.networking.x-k8s.io -> inferencepools: get, watch, list
+  - RoleBinding ssrf-allowlist-rolebinding -> ServiceAccount "placeholder" (namespace unset)
+- Role: ${PROJECT_NAME}-exec-role (scaffold only)
+  - API Groups: "" -> pods/exec (resourceName ${PROJECT_NAME}-0-0): create
+  - RoleBinding ${PROJECT_NAME}-exec-rolebinding -> Group system:authenticated
+    (every authenticated user can exec into the template pod; scaffold only)
+
+Service Mesh / Gateway Configuration (RHOAI, per overlay 0011):
+- Gateway-level Kuadrant AuthPolicy authenticates clients (Bearer token).
+- Workload DestinationRule: TLS origination to sidecar :8000, InsecureSkipVerify=true in P/D mode.
+- No PeerAuthentication / AuthorizationPolicy defined by this repo.
+
+Secrets:
+- (name set by deployer, mounted at -cert-path) kubernetes.io/tls - tls.crt / tls.key server
+  cert, provisioned externally (KServe / OpenShift service-ca); no reload, no auto-rotate in-process
+- (in-memory) self-signed RSA-4096 fallback cert, 10-year validity, regenerated on restart
+
+Scaffold-only network objects (not the RHOAI deployment path):
+- Service ${PROJECT_NAME}-service ClusterIP 8080/TCP. The selector does not match the pod
+  labels, and port 8080 does not match the default listener port 8000.
+- Route ${PROJECT_NAME}-route, edge TLS -> 8080. Plaintext goes to a backend that serves TLS
+  by default.

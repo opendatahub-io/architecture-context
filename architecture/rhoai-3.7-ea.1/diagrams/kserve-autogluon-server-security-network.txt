@@ -1,0 +1,118 @@
+kserve-autogluon-server — Security Network Diagram (RHOAI 3.7-ea.1)
+Source: architecture/rhoai-3.7-ea.1/kserve-autogluon-server.md (branch rhoai-3.7-ea.1 @ bc6165c)
+Image:  quay.io/rhoai/odh-kserve-autogluon-server-rhel9
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                         │
+│  [Inference Client]                                                     │
+│         │                                                               │
+│         │ Port: 443/TCP (or 80/TCP in-cluster)                          │
+│         │ Protocol: HTTPS / HTTP                                        │
+│         │ Encryption: Platform-dependent                                │
+│         │ Auth: Bearer token when platform auth is enabled              │
+│         ▼                                                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│  PLATFORM INGRESS (not defined in this repo)                            │
+│                                                                         │
+│  [Route / Gateway / auth proxy]                                         │
+│  - Managed per InferenceService by KServe controller and                │
+│    odh-model-controller                                                 │
+│  - No Ingress/Route objects shipped by this component                   │
+│         │                                                               │
+│         │ Port: 80/TCP → targetPort 8080/TCP                            │
+│         │ Protocol: HTTP                                                │
+│         │ Encryption: Platform/mesh-dependent (none at container)       │
+│         │ Auth: None at container                                       │
+│         ▼                                                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│  CLUSTER INTERNAL — user namespace                                      │
+│                                                                         │
+│  [Service: <isvc>-predictor]  ClusterIP 80/TCP → 8080/TCP               │
+│         │                                                               │
+│         ▼                                                               │
+│  [Predictor Pod]                                                        │
+│  - securityContext: runAsNonRoot, capabilities drop [ALL],              │
+│    allowPrivilegeEscalation=false; image runs as UID 1001               │
+│  - Resources: 1 CPU / 2Gi (request = limit)                             │
+│                                                                         │
+│    (init) [storage-initializer] ──writes──▶ /mnt/models (shared vol)    │
+│                                                 │                       │
+│                                                 │ unpickle predictor.pkl│
+│                                                 ▼ (code-exec risk)      │
+│    [kserve-container: autogluonserver]                                  │
+│    - Entrypoint: python -m autogluonserver --model_dir=/mnt/models      │
+│    - REST  8080/TCP  HTTP  plaintext (uvicorn)   Auth: NONE             │
+│        /, /metrics, /v1/models/*, /v2/health/*, /v2/models/*,           │
+│        /v2/repository/models/{m}/load|unload                            │
+│    - gRPC  8081/TCP  gRPC  add_insecure_port     Auth: NONE             │
+│        inference.GRPCInferenceService (not exposed by runtime manifest) │
+│    - No Kubernetes API access                                           │
+│                                                                         │
+│  [Prometheus / user-workload monitoring]                                │
+│         │ Port: 8080/TCP  Protocol: HTTP  Encryption: None  Auth: None  │
+│         └──▶ GET /metrics on autogluonserver                            │
+│                                                                         │
+│         │ (egress from storage-initializer; from autogluonserver only   │
+│         │  when --model_dir is a remote URI)                            │
+│         ▼                                                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES (egress)                                             │
+│                                                                         │
+│  [S3-compatible object storage]                                         │
+│  - Port: 443/TCP  Protocol: HTTPS                                       │
+│  - Encryption: TLS, verification on by default                          │
+│      S3_VERIFY_SSL=false disables verification (risk)                   │
+│      AWS_CA_BUNDLE sets a custom CA                                     │
+│  - Auth: AWS access keys / IAM                                          │
+│                                                                         │
+│  [GCS / Azure Blob / Azure File]                                        │
+│  - Port: 443/TCP  Protocol: HTTPS  Encryption: TLS                      │
+│  - Auth: GCP service account / Azure client secret                      │
+│                                                                         │
+│  [HDFS / WebHDFS, HTTP(S), Git]                                         │
+│  - Port: varies  Protocol: HDFS / HTTP(S)                               │
+│  - Encryption: scheme-dependent                                         │
+│  - Auth: /var/secrets/kserve-hdfscreds, GIT_PASSWORD                    │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- ClusterRoles: none
+- Roles / RoleBindings: none
+- The runtime container needs no Kubernetes API access.
+- The inherited kserve-manager-role in the tree belongs to the separate
+  RHOAI kserve controller component and is not shipped by this image.
+
+Authentication & Authorization:
+- All REST endpoints on :8080 (GET, POST): no in-application auth.
+  Enforcement is delegated to the platform (KServe / odh-model-controller
+  auth proxy or Gateway when enabled). Unauthenticated inside the pod network.
+- gRPC :8081 (all RPCs): insecure port, no auth. Not exposed by the
+  ClusterServingRuntime manifest.
+
+Service Mesh / Network Policy:
+- No PeerAuthentication, AuthorizationPolicy or NetworkPolicy is defined in
+  this repo for the runtime. Isolation depends on platform configuration.
+
+Secrets:
+- Storage credentials (e.g. S3 data connection) (Opaque, env injection by KServe)
+  - AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AZ_CLIENT_SECRET, GIT_PASSWORD
+  - Provisioned by: user / RHOAI data connections; Auto-rotate: No
+  - Visible as env vars in the pod
+- kserve-hdfscreds (Opaque, mounted at /var/secrets/kserve-hdfscreds)
+  - HDFS credentials; Provisioned by: user; Auto-rotate: No
+
+TLS / Crypto / FIPS:
+- No server-side TLS (plaintext uvicorn; gRPC add_insecure_port).
+- Outbound TLS uses library defaults (boto3 / requests / azure); certifi or
+  system trust store.
+- OpenSSL from the AIPCC RHEL 9.8 base image; no explicit FIPS opt-in.
+- Transitive cryptography==48.0.0, pyjwt==2.13.0; no direct crypto use.
+
+Key Security Risks:
+1. Model loading unpickles predictor.pkl and model artifacts. Anyone with
+   write access to the model storage location can run code in the pod.
+2. Inference, metrics and repository load/unload endpoints have no auth at
+   the container. Exposure relies entirely on platform controls.
+3. S3_VERIFY_SSL=false turns off certificate verification for S3 downloads.
+4. Storage credentials are injected as plain environment variables.

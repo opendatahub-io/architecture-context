@@ -1,0 +1,52 @@
+sequenceDiagram
+    autonumber
+    participant Browser as Browser
+    participant Dash as odh-dashboard<br/>model-registry BFF
+    participant AuthP as Registry auth proxy<br/>(operator-managed)<br/>8443/TCP HTTPS
+    participant Reg as model-registry proxy<br/>8080/TCP HTTP
+    participant RegDB as MySQL / PostgreSQL<br/>3306 or 5432/TCP
+    participant Cat as model-catalog<br/>8080/TCP HTTP
+    participant CatDB as model-catalog-postgres<br/>5432/TCP
+    participant HF as huggingface.co / git<br/>443/TCP HTTPS
+    participant K8s as Kubernetes API<br/>6443/TCP HTTPS
+    participant Job as async-upload Job
+    participant Store as S3 / OCI<br/>443/TCP HTTPS
+    participant Sig as Sigstore<br/>443/TCP HTTPS
+    participant Ctrl as ISVC controller<br/>(in model-registry-operator)
+
+    Note over Browser,RegDB: Flow 1: Register and query models via the dashboard
+    Browser->>Dash: HTTPS 443 via Platform Gateway<br/>TLS 1.2+, OAuth/OIDC bearer
+    Dash->>AuthP: HTTPS 8443 (operator-defined)<br/>TLS, user bearer token (SAR)
+    AuthP->>Reg: HTTP 8080 in-pod/loopback<br/>no encryption, no auth
+    Reg->>RegDB: DB wire<br/>optional TLS 1.2+ (verify off by default)<br/>DB password
+    RegDB-->>Reg: rows
+    Reg-->>AuthP: JSON
+    AuthP-->>Dash: JSON
+    Dash-->>Browser: UI
+
+    Note over Cat,HF: Flow 2: Model Catalog ingestion (leader only) and browsing
+    Note over Cat: Init containers copy benchmark data<br/>and default sources to /shared-data
+    Cat->>CatDB: Acquire pglock catalog-leader<br/>PostgreSQL 5432, password
+    Cat->>HF: HTTPS 443, TLS<br/>optional HF_API_KEY / git creds
+    HF-->>Cat: model / skill metadata
+    Cat->>CatDB: Upsert catalog entries<br/>PostgreSQL 5432 (TLS not configured)
+    Dash->>Cat: GET /api/*_catalog/*<br/>HTTP 8080 via operator-managed proxy<br/>user token checked at proxy
+    Cat-->>Dash: catalog JSON
+
+    Note over Dash,Sig: Flow 3: Async model upload Job
+    Dash->>K8s: Create Job, Secret, ConfigMap<br/>HTTPS 6443, TLS 1.2+, user/SA token
+    K8s->>Job: Schedule pod (credentials from Secret)
+    Job->>Store: Download source (S3 / OCI / URI)<br/>HTTPS 443, AWS keys / registry creds
+    opt --sign enabled
+        Job->>Sig: Sign model + image<br/>HTTPS 443, projected SA OIDC token
+    end
+    Job->>Store: Upload to S3 or push ModelCar (skopeo)<br/>HTTPS 443, TLS verify on by default
+    Job->>AuthP: Register model/version/artifact<br/>HTTPS 443, bearer user token, custom CA opt.
+    AuthP->>Reg: HTTP 8080
+    Reg-->>Job: created
+
+    Note over K8s,Ctrl: Flow 4: InferenceService sync
+    Ctrl->>K8s: Watch InferenceService, get Service<br/>HTTPS 6443, SA token
+    Ctrl->>Reg: Update serving state<br/>HTTPS 443 or HTTP 8080, bearer token<br/>TLS 1.2 (skip-verify optional)
+    Reg-->>Ctrl: OK
+    Ctrl->>K8s: Patch ISVC labels / finalizer<br/>HTTPS 6443, SA token

@@ -1,0 +1,85 @@
+graph TB
+    %% praxis-grid security network diagram (trust zones)
+
+    subgraph External["EXTERNAL (Untrusted)"]
+        Client["External Client"]
+        PeerOps["Peer grid-operators<br/>other sites / clusters / clouds"]
+        AnyHolder["Any holder of the SWIM mesh key<br/>(no per-site origin binding, upstream issue 75)"]
+    end
+
+    subgraph Edge["EDGE / INGRESS (owned by deployment owner)"]
+        LBSwim["LoadBalancer grid-operator-swim<br/>7946/UDP, externalTrafficPolicy: Local<br/>selector-less, leader holder EndpointSlice"]
+        LBSignals["LoadBalancer grid-operator-signals<br/>9091/TCP, externalTrafficPolicy: Local<br/>selector-less, leader holder EndpointSlice"]
+        RouteSignals["Route: signals (optional)<br/>443/TCP passthrough, mTLS end-to-end"]
+        RouteEnroll["Route: grid-enrollment (optional)<br/>443/TCP passthrough or reencrypt<br/>edge rejected"]
+        EdgeGW["Edge Praxis gateway<br/>443/TCP HTTPS<br/>external caller auth (not AGN)"]
+    end
+
+    subgraph Cluster["CLUSTER INTERNAL (site)"]
+        subgraph NS_Grid["Namespace: grid-system"]
+            Operator["grid-operator<br/>SA: grid-operator<br/>9090/TCP HTTPS metrics, 9091/TCP mTLS signals, 7946/UDP SWIM<br/>non-root, read-only rootfs"]
+            NetPol["NetworkPolicy (OpenShift)<br/>9090 only from openshift-monitoring<br/>and user-workload-monitoring<br/>7946 + 9091 open to any source"]
+        end
+
+        subgraph NS_GW["Namespace: gateway"]
+            PraxisGW["Praxis AI gateway<br/>credential_inject, intelligent_route<br/>mounts provider Secrets"]
+            OverlaySync["grid-overlay-sync sidecar<br/>9091/TCP HTTP health, no auth"]
+        end
+
+        subgraph NS_Hub["Hub namespace (optional)"]
+            Enrollment["enrollment<br/>8443/TCP HTTPS<br/>TokenReview + SAR"]
+            PG[("PostgreSQL<br/>5432/TCP TLS")]
+            Dashboard["fleet-dashboard<br/>8080/TCP HTTP<br/>no in-app authz, oauth-proxy front"]
+        end
+
+        Monitoring["OpenShift monitoring<br/>Prometheus"]
+        K8sAPI["Kubernetes API server<br/>443/TCP"]
+    end
+
+    subgraph ExternalServices["EXTERNAL SERVICES"]
+        Providers["Inference backends / external APIs<br/>OpenAI, Anthropic, Bedrock, Vertex, vLLM<br/>typically 443/TCP"]
+        EPP["llm-d EPP / gateway metrics<br/>HTTPS"]
+        MCP["MCP servers<br/>HTTP/HTTPS"]
+    end
+
+    %% Federation flows
+    PeerOps -->|"SWIM/UDP 7946<br/>AES-256-GCM<br/>shared mesh key"| LBSwim
+    AnyHolder -.->|"can inject state for any site"| LBSwim
+    LBSwim --> Operator
+    PeerOps -->|"HTTPS/9091<br/>mTLS TLS 1.2+ EMS<br/>SPIFFE site cert"| LBSignals
+    PeerOps -->|"HTTPS/443<br/>mTLS passthrough"| RouteSignals
+    LBSignals --> Operator
+    RouteSignals --> Operator
+    Operator -->|"SWIM/UDP 7946 + HTTPS/9091 mTLS"| PeerOps
+
+    %% Data plane
+    Client -->|"HTTPS/443<br/>TLS<br/>edge-owned auth"| EdgeGW
+    EdgeGW -->|"HTTPS<br/>mTLS<br/>AGN site cert"| PraxisGW
+    PraxisGW -->|"HTTPS<br/>TLS<br/>Bearer via credential_inject"| Providers
+    PraxisGW -->|"HTTPS/9091 mTLS<br/>local gateway cert<br/>/v1/site/signals/ingest"| Operator
+
+    %% Control plane
+    Operator -->|"HTTPS/443<br/>TLS 1.2+<br/>SA token"| K8sAPI
+    OverlaySync -->|"HTTPS/443<br/>TLS 1.2+<br/>SA token, watch one ConfigMap"| K8sAPI
+    Operator -->|"HTTP/HTTPS<br/>TLS 1.2+ when HTTPS<br/>Bearer from Secret / none"| Providers
+    Operator -->|"HTTPS<br/>TokenRequest bearer<br/>grid-operator-metrics-scraper"| EPP
+    Operator -->|"HTTP/HTTPS<br/>tools/list"| MCP
+    Monitoring -->|"HTTPS/9090<br/>service-CA TLS<br/>no auth"| Operator
+
+    %% Enrollment
+    Operator -->|"HTTPS/8443<br/>TLS<br/>enrollment token / site cert"| Enrollment
+    RouteEnroll --> Enrollment
+    Enrollment -->|"Postgres/5432<br/>TLS, SCRAM"| PG
+    Enrollment -->|"TokenReview + SAR"| K8sAPI
+
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef risk fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef internal fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+
+    class Client,PeerOps external
+    class AnyHolder,Dashboard risk
+    class LBSwim,LBSignals,RouteSignals,RouteEnroll,EdgeGW ingress
+    class Operator,NetPol,PraxisGW,OverlaySync,Enrollment,PG,Monitoring,K8sAPI internal
+    class Providers,EPP,MCP externalservice

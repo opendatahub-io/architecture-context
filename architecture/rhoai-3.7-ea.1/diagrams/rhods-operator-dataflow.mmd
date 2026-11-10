@@ -1,0 +1,55 @@
+sequenceDiagram
+    autonumber
+    participant User as Browser / API Client
+    participant Router as OpenShift Router<br/>443/TCP (reencrypt)
+    participant GW as data-science-gateway (Envoy)<br/>443/TCP HTTPS, openshift-ingress
+    participant KAP as kube-auth-proxy<br/>8443/TCP HTTPS
+    participant IdP as OpenShift OAuth / OIDC Issuer<br/>443/TCP HTTPS
+    participant Backend as Backend HTTPRoute<br/>(dashboard, model APIs)
+    participant Admin as Platform Admin
+    participant API as kube-apiserver<br/>6443/TCP HTTPS
+    participant WH as Operator Webhook<br/>443→9443/TCP HTTPS
+    participant Op as rhods-operator<br/>manager
+    participant Mod as Module Operators
+    participant Nginx as dashboard-redirect<br/>8080/TCP HTTP
+    participant Prom as Prometheus
+
+    rect rgb(230, 240, 255)
+    Note over User,Backend: Flow 1: User access through the platform Gateway
+    User->>Router: HTTPS 443/TCP, TLS 1.2+<br/>No auth yet
+    Router->>GW: HTTPS 443/TCP<br/>TLS (service-ca)
+    GW->>KAP: ext_authz GET /oauth2/auth, 8443/TCP<br/>TLS, cert NOT verified (insecureSkipVerify)<br/>Forwarded cookie / Authorization
+    alt Unauthenticated user
+        KAP-->>User: Redirect to /oauth2/start
+        User->>IdP: OAuth2 code flow (HTTPS 443/TCP)
+        IdP-->>KAP: Callback via HTTPRoute /oauth2<br/>sets _oauth2_proxy cookie
+    end
+    KAP-->>GW: 2xx allow
+    GW->>Backend: Lua filter: Authorization: Bearer user-token<br/>_oauth2_proxy cookie stripped
+    Backend-->>User: Response (backend enforces RBAC via SAR)
+    end
+
+    rect rgb(235, 255, 235)
+    Note over Admin,Mod: Flow 2: DataScienceCluster reconciliation and module deployment
+    Admin->>API: Create/update DSC / DSCI<br/>HTTPS 6443/TCP, user token
+    API->>WH: Validate / mutate, 443→9443/TCP<br/>TLS (service-ca caBundle), failurePolicy Fail
+    WH-->>API: Admission response
+    Op->>API: Watch DSC (SA token, TLS 1.2+)
+    Note over Op: Render charts / manifests from<br/>/opt/charts and /opt/manifests<br/>Check upgrade gate odh-upgrade-acks
+    Op->>API: Server-side apply module operators, CRDs, RBAC<br/>HTTPS 6443/TCP, SA token
+    Mod->>API: Report module status (module SA token)
+    API-->>Op: Module status aggregated into DSC
+    end
+
+    rect rgb(255, 245, 225)
+    Note over User,Nginx: Flow 3: Legacy dashboard URL redirect
+    User->>Router: Route rhods-dashboard (edge, HSTS)<br/>HTTPS 443/TCP, no auth
+    Router->>Nginx: HTTP 8080/TCP (in-cluster, plaintext)
+    Nginx-->>User: 301 to https://gateway-hostname or deprecation page
+    end
+
+    rect rgb(245, 235, 255)
+    Note over Prom,Op: Flow 4: Metrics scrape
+    Prom->>Op: GET /metrics, 8443/TCP HTTPS<br/>TLS (service-ca), Bearer (TokenReview + SAR)
+    Op-->>Prom: Prometheus metrics
+    end

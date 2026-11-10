@@ -1,0 +1,42 @@
+sequenceDiagram
+    participant KServe as KServe InferenceService logger
+    participant MM as ModelMesh payload processor
+    participant User as User / ODH Dashboard
+    participant Route as OpenShift Route<br/>443/TCP HTTPS
+    participant KRP as kube-rbac-proxy sidecar
+    participant Health as health_app<br/>8080/TCP HTTP (no auth)
+    participant App as Main app<br/>127.0.0.1:8081 HTTP / 4443 HTTPS
+    participant Sched as Prometheus scheduler<br/>(in-process, 30s)
+    participant Store as Storage<br/>PVC HDF5 / MariaDB 3306 / PostgreSQL 5432
+    participant Prom as Prometheus / UWM
+    participant Mig as trustyai-migrate
+
+    Note over KServe,Store: Flow 1 - KServe inference logging ingest
+    KServe->>Health: POST / CloudEvent (gzip optional)<br/>8080/TCP HTTP, plaintext, no auth
+    Health->>Store: Persist joined request/response rows<br/>DB protocol, TLS if CA mounted, DB user/password
+    Health-->>KServe: 200 OK
+
+    Note over MM,Store: Flow 2 - ModelMesh payload ingest and reconciliation
+    MM->>Health: POST /consumer/kserve/v2 (request part)<br/>8080/TCP HTTP, no auth
+    Health->>Store: Buffer partial payload
+    MM->>Health: POST /consumer/kserve/v2 (response part)
+    Health->>Store: Reconcile by inference id, write rows<br/>TLS if CA mounted, DB credentials
+
+    Note over User,Prom: Flow 3 - Metric registration and Prometheus publishing
+    User->>Route: POST /metrics/group/fairness/spd/request<br/>443/TCP HTTPS TLS, Bearer token
+    Route->>KRP: Forward
+    KRP->>KRP: TokenReview / SubjectAccessReview
+    KRP->>App: Proxy to 127.0.0.1:8081<br/>HTTP, pod-local
+    App-->>KRP: Request id
+    KRP-->>User: Response
+    loop every SERVICE_METRICS_SCHEDULE (30s)
+        Sched->>Store: Read inference data
+        Store-->>Sched: Rows
+        Sched->>Sched: Compute metrics, update gauges
+    end
+    Prom->>App: GET /q/metrics<br/>4443/TCP HTTPS TLS (or proxy port), per ServiceMonitor
+    App-->>Prom: trustyai_* gauges
+
+    Note over Mig,Store: Flow 4 - Legacy data migration
+    Mig->>Store: Read legacy PVC HDF5/CSV or MariaDB tables<br/>3306/TCP, TLS CERT_REQUIRED if CA mounted
+    Mig->>Store: Write canonical schema, namespaced tables<br/>asyncmy/asyncpg 3306/5432, TLS + hostname check if CA mounted

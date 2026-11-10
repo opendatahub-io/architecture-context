@@ -1,0 +1,125 @@
+TRAINING-HUB - SECURITY NETWORK DIAGRAM (RHOAI 3.7-ea.1, training-hub v0.11.2)
+Source: architecture/rhoai-3.7-ea.1/training-hub.md
+
+NOTE: training-hub is an in-process Python library + CLI (`thub`). It has NO
+Kubernetes Services, Ingress, CRDs, ServiceAccounts or RBAC of its own, and it
+never calls the Kubernetes API. All identity, RBAC and network policy come from
+the hosting pod (Kubeflow Trainer v2 TrainJob, KFTO PyTorchJob or Workbench)
+running a distributed-workloads `odh-th-torch-{cpu,cuda,rocm}-py312-rhel9` image.
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  CODE-EXECUTION TRUST INPUTS (treat as untrusted unless authored by user)   │
+│                                                                             │
+│  [thub YAML config / CLI flags]                                             │
+│  - Callable params (--reward-fn, --rollout-fn, --evaluator, --adapter, ...) │
+│    resolved via importlib.import_module(), NO allowlist                     │
+│    (src/training_hub/cli.py:386-433)                                        │
+│         │                                                                   │
+│         │ In-process Python import (arbitrary code execution)               │
+│         ▼                                                                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  TRAINING POD / WORKBENCH  (tenant namespace)                               │
+│                                                                             │
+│  [training-hub library]                                                     │
+│  - Listening ports: none (except torchrun rendezvous, below)                │
+│  - ServiceAccount: inherited from TrainJob / PyTorchJob / Notebook pod      │
+│  - Env inputs: PET_NNODES, PET_NODE_RANK, PET_NPROC_PER_NODE,               │
+│    PET_MASTER_ADDR, PET_MASTER_PORT (injected by Kubeflow Trainer / KFTO)   │
+│  - Signal input: SIGTERM from kubelet (Kueue preemption / pod deletion)     │
+│    -> flag-only handler, all_reduce(MAX) across ranks, save at next step    │
+│                                                                             │
+│  [Callback payload file]                                                    │
+│  - Base64 JSON of callback class source, file mode 0600                     │
+│  - Path in TRAINING_HUB_CALLBACKS_PATH (default: checkpoint output dir)     │
+│  - exec()-ed by every torchrun worker (serialize.py:92,138)                 │
+│  - Integrity depends on PVC being writable only by this job                 │
+│         │                                                                   │
+│         │ Port: MASTER_PORT 29500/TCP (default) + NCCL ports                │
+│         │ Protocol: c10d rendezvous + NCCL / Gloo collectives               │
+│         │ Encryption: NONE (plaintext)                                      │
+│         │ Auth: NONE                                                        │
+│         ▼                                                                   │
+│  [Peer training ranks - torchrun workers, pods of the same job]             │
+│  - InstructLab-Training (SFT), Mini-Trainer (OSFT), verl (GRPO)             │
+│         │                                                                   │
+│         │ Local filesystem I/O (no network)                                 │
+│         ▼                                                                   │
+│  [Checkpoint dir on PVC]   checkpoint_storage="pvc" (default)               │
+│                                                                             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  IN-CLUSTER OR EXTERNAL PLATFORM SERVICES (endpoint chosen by user config)  │
+│                                                                             │
+│  [OpenAI-compatible LLM endpoint - vLLM / KServe / external]                │
+│  - Configured by: OPENAI_API_BASE / LiteLLM model string                    │
+│  - Port: URI-defined   Protocol: HTTP/HTTPS                                 │
+│  - Encryption: depends on URI (TLS only if https://)                        │
+│  - Auth: OPENAI_API_KEY; set to "dummy" when only api_base is given         │
+│  - Used by: GEPA task/reflection LMs, GRPO rollouts and judge calls         │
+│                                                                             │
+│  [MLflow tracking server - RHOAI or external]                               │
+│  - Configured by: MLFLOW_TRACKING_URI                                       │
+│  - Port: URI-defined   Protocol: HTTP/HTTPS                                 │
+│  - Encryption: depends on URI                                               │
+│  - Auth: MLflow client auth (env)                                           │
+│  - Used by: LoRA/GEPA tracking, MLflow GEPA backend (optimize_prompts)      │
+│                                                                             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                          │
+│                                                                             │
+│  [Hugging Face Hub - huggingface.co]                                        │
+│  - Port: 443/TCP   Protocol: HTTPS   Encryption: TLS (library default)      │
+│  - Auth: optional HF_TOKEN                                                  │
+│  - Purpose: model and dataset download when paths are Hub IDs               │
+│                                                                             │
+│  [S3-compatible object storage - AWS_ENDPOINT_URL_S3]                       │
+│  - Port: 443/TCP (endpoint-defined)   Protocol: HTTPS/HTTP                  │
+│  - Encryption: TLS when endpoint is https (botocore default)                │
+│  - Auth: AWS credentials (env / botocore credential chain)                  │
+│  - Purpose: checkpoint mirror/restore (checkpoint_storage="s3://...")       │
+│  - Uploader: node 0 / local rank 0 only, 4 workers, 3 attempts,             │
+│    .upload_complete marker; write/read/delete probe at train() entry        │
+│                                                                             │
+│  [Weights & Biases]                                                         │
+│  - Port: 443/TCP   Protocol: HTTPS   Encryption: TLS                        │
+│  - Auth: WANDB_API_KEY   Purpose: optional metrics (LoRA, GRPO/ART)         │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+TLS posture:
+- training-hub configures no TLS itself. Min/max version, ciphers and CA
+  validation are the defaults of requests, aiohttp and botocore (system or
+  certifi trust store). No custom CA handling.
+
+RBAC Summary:
+- ClusterRoles: none
+- Roles / RoleBindings: none
+- ServiceAccount: none (uses hosting pod's ServiceAccount; never calls K8s API)
+
+Service Mesh Configuration:
+- None. No PeerAuthentication / AuthorizationPolicy. Inter-rank c10d/NCCL
+  traffic is plaintext; protection relies on NetworkPolicy (if any) set by
+  the platform.
+
+Secrets (all consumed as pod environment variables; none auto-rotated):
+- OPENAI_API_KEY - LiteLLM-routed LLM endpoints (GEPA, GRPO); "dummy" for
+  local endpoints. Provisioned by user / Secret ref in TrainJob or workbench.
+- WANDB_API_KEY - Weights & Biases auth; also gates ART wandb stub.
+- AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY (botocore chain) - S3 checkpoint
+  mirroring. Provisioned by user / data connection Secret.
+- HF_TOKEN - gated Hugging Face model/dataset downloads.
+- Risk: env-var credentials are visible to every process in the pod.
+
+Code-Execution Trust Boundaries:
+- CLI callable resolution: importlib.import_module, no allowlist
+  (src/training_hub/cli.py:386-433)
+- Callback serialization: base64 class source, 0600 file, exec() in workers
+  (src/training_hub/adapters/serialize.py:92,138)
+- trust_remote_code passthrough to HF loaders, default False
+  (src/training_hub/algorithms/lora.py:370,
+   src/training_hub/profiling/memory_estimator.py:83)
+
+FIPS / Supply Chain:
+- No direct crypto imports; transitively Python ssl (OpenSSL) from the
+  consuming image. FIPS posture inherited from distributed-workloads image.
+- No lock file in repo (lower-bound deps only); reproducibility enforced by
+  downstream distributed-workloads image lock files.
+- litellm pinned to exclude compromised 1.82.7, 1.82.8, 1.107.0.

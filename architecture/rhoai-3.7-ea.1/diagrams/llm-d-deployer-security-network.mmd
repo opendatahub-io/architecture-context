@@ -1,0 +1,74 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        Client["Client<br/>OpenAI-compatible API"]
+        Admin["Cluster user / Helm"]
+    end
+
+    subgraph Ingress["INGRESS"]
+        K8sIngress["k8s Ingress (optional)<br/>80/TCP, 443 if ingress.tls.enabled<br/>disabled on OpenShift"]
+        GW["Inference Gateway Envoy<br/>Gateway API 80/TCP HTTP<br/>NodePort, no TLS, no auth"]
+        GrafRoute["grafana-route<br/>443/TCP HTTPS edge"]
+    end
+
+    subgraph Cluster["CLUSTER INTERNAL (no NetworkPolicy)"]
+        subgraph NS_Release["Namespace: release ns"]
+            Ctrl["modelservice controller<br/>SA: modelservice SA<br/>probes 8081, svc 8443<br/>non-root, seccomp, drop ALL"]
+            Redis["Redis master<br/>8100/TCP to 6379<br/>RESP, no auth, no TLS"]
+        end
+        subgraph NS_Model["Namespace: ModelService ns"]
+            EPP["EPP<br/>SA: model-epp-sa<br/>9002 gRPC, 9003 health, 9090 metrics<br/>Service type NodePort"]
+            SC["Decode routing sidecar<br/>8000/TCP"]
+            Decode["Decode vLLM<br/>8001/TCP, NIXL 5557/TCP"]
+            Prefill["Prefill vLLM<br/>8000/TCP, NIXL 5557/TCP"]
+        end
+        subgraph NS_Obs["Namespace: llm-d-observability"]
+            Grafana["Grafana<br/>SA: grafana-sa<br/>admin/admin default"]
+        end
+        API["kube-apiserver<br/>6443/TCP HTTPS"]
+        Prom["Prometheus<br/>UWM or kube-prometheus-stack"]
+        Thanos["thanos-querier.openshift-monitoring<br/>9091/TCP HTTPS"]
+    end
+
+    subgraph Egress["EXTERNAL SERVICES"]
+        HF["huggingface.co<br/>443/TCP HTTPS<br/>Bearer HF_TOKEN"]
+        Registries["ghcr.io, quay.io, gcr.io/istio-testing,<br/>cr.kgateway.dev 443/TCP"]
+        Repos["charts.bitnami.com, github.com,<br/>PyPI, prometheus-community 443/TCP"]
+    end
+
+    Client -->|HTTP or HTTPS/80, 443<br/>optional edge TLS<br/>no auth| K8sIngress
+    K8sIngress -->|HTTP/80| GW
+    Client -->|HTTP/80<br/>plaintext<br/>no auth| GW
+    GW -->|gRPC/9002 ext_proc<br/>TLS SIMPLE insecureSkipVerify<br/>no auth| EPP
+    EPP -->|RESP/8100<br/>plaintext, no auth| Redis
+    GW -->|HTTP/8000<br/>plaintext| SC
+    SC -->|HTTP/8000<br/>plaintext| Prefill
+    SC -->|HTTP/8001 localhost| Decode
+    Prefill <-->|TCP/5557 + UCX RDMA<br/>no encryption| Decode
+    Decode -->|RESP/8100 LMCache lookup<br/>plaintext| Redis
+
+    Admin -->|HTTPS/6443<br/>TLS 1.2+, user RBAC| API
+    Ctrl -->|HTTPS/6443<br/>TLS 1.2+, SA token| API
+
+    Prom -->|HTTP/8000 /metrics<br/>no auth| Decode
+    Prom -->|HTTP/9090 /metrics<br/>Bearer SA token| EPP
+    Admin -->|HTTPS/443 Grafana login| GrafRoute
+    GrafRoute --> Grafana
+    Grafana -->|HTTPS/9091<br/>tlsSkipVerify<br/>Bearer grafana-sa-token| Thanos
+
+    Prefill -->|HTTPS/443<br/>Bearer HF_TOKEN| HF
+    Decode -->|HTTPS/443<br/>Bearer HF_TOKEN| HF
+    EPP -->|HTTPS/443 tokenizer<br/>Bearer HF_TOKEN| HF
+    Ctrl -.->|image pulls 443| Registries
+    Admin -.->|installer 443| Repos
+
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef internal fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef risk fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+
+    class Client,Admin external
+    class K8sIngress,GrafRoute ingress
+    class GW,Redis,Grafana risk
+    class Ctrl,EPP,SC,Decode,Prefill,API,Prom,Thanos internal
+    class HF,Registries,Repos externalservice

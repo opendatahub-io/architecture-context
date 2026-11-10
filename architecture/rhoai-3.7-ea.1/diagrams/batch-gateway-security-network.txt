@@ -1,0 +1,143 @@
+batch-gateway (RHOAI 3.7-ea.1) - Security Network Diagram
+Source: architecture/rhoai-3.7-ea.1/batch-gateway.md
+Repository: red-hat-data-services/batch-gateway @ fc75447
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                         │
+│                                                                               │
+│  [API Client]  (OpenAI Batch API: /v1/files, /v1/batches)                     │
+│         │                                                                     │
+│         │ Port: 443/TCP (gateway listener, typical)                           │
+│         │ Protocol: HTTPS                                                     │
+│         │ Encryption: TLS (gateway-terminated)                                │
+│         │ Auth: Bearer token (Kubernetes/OIDC)                                │
+│         ▼                                                                     │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (Platform Gateway - Gateway API)                                     │
+│                                                                               │
+│  [Platform Gateway: batch-route]                                              │
+│  - HTTPRoute {release}-apiserver (optional, apiserver.httpRoute.enabled)      │
+│  - parentRef: llm-d-inference-gateway (default)                               │
+│  - PathPrefix: /v1/batches, /v1/files                                         │
+│  - AuthN: Kuadrant AuthPolicy (valid Kubernetes token) - per deploy guide     │
+│  - RateLimitPolicy (MaaS)                                                     │
+│  - Injects/appends tenant header X-MaaS-Username                              │
+│         │                                                                     │
+│         │ Port: 8000/TCP                                                      │
+│         │ Protocol: HTTP or HTTPS                                             │
+│         │ Encryption: None, or TLS 1.2+ when apiserver.tls.enabled            │
+│         │ Auth: none in-app; tenant header from gateway                       │
+│         ▼                                                                     │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  CLUSTER INTERNAL - release namespace (NO NetworkPolicy shipped)              │
+│                                                                               │
+│  [batch-gateway-apiserver]  Deployment                                        │
+│  - Service {release}-apiserver ClusterIP 8000/TCP (API), 8081/TCP (obs)       │
+│  - Middleware: Recovery -> RequestMiddleware -> SecurityHeaders (no auth)     │
+│  - Tenant = LAST value of X-MaaS-Username; missing header -> "default"        │
+│  - Captures pass-through headers (default: Authorization) as pth: DB tags     │
+│  - TLS: min TLS 1.2 default; ciphers/ALPN from platform TLS profile;          │
+│         cipher list rejected with TLS 1.3                                     │
+│  - Image: quay.io/rhoai/odh-llm-d-batch-gateway-apiserver-rhel9               │
+│         │                                                                     │
+│         ├──► PostgreSQL   5432/TCP  TCP (pgx)  TLS per sslmode   postgresql-url│
+│         ├──► S3 storage   443/TCP   HTTPS      TLS               SigV4        │
+│         └──► OTel         4317/TCP  OTLP/gRPC  plaintext (default) none       │
+│                                                                               │
+│  [batch-gateway-processor]  StatefulSet (stable identity)                     │
+│  - Service {release}-processor Headless (clusterIP: None)                     │
+│  - 9090/TCP HTTP observability (/metrics, /health, /ready, pprof off)         │
+│  - Image: quay.io/rhoai/odh-llm-d-batch-gateway-processor-rhel9               │
+│         │                                                                     │
+│         ├──► PostgreSQL   5432/TCP  TCP        TLS per sslmode   postgresql-url│
+│         ├──► S3 storage   443/TCP   HTTPS      TLS               SigV4        │
+│         ├──► Redis/Valkey 6379/TCP  TCP        redis:// / rediss://  redis-url │
+│         ├──► OTel         4317/TCP  OTLP/gRPC  plaintext (default) none       │
+│         │                                                                     │
+│         │ Port: URL-configured                                                │
+│         │ Protocol: HTTP/HTTPS (sync dispatch)                                │
+│         │ Encryption: optional TLS 1.2+, custom CA, optional mTLS             │
+│         │             (tlsInsecureSkipVerify available, testing only)         │
+│         │ Auth: forwarded user Authorization bearer (from DB tags);           │
+│         │       optional inference-api-key                                    │
+│         ▼                                                                     │
+│  [Internal Gateway: batch-llm-route -> llm-d inference gateway / EPP]         │
+│  - AuthN + SubjectAccessReview on inferencepools per request                  │
+│  - 403 surfaces as failed batch lines                                         │
+│  - x-gateway-inference-objective selects priority band                        │
+│                                                                               │
+│  [batch-gateway-gc]  Deployment (1 replica), no Service                       │
+│  - 9091/TCP HTTP metrics (PodMonitor)                                         │
+│  - Image: quay.io/rhoai/odh-llm-d-batch-gateway-gc-rhel9                      │
+│         │                                                                     │
+│         ├──► PostgreSQL   5432/TCP  TCP        TLS per sslmode   postgresql-url│
+│         ├──► S3 storage   443/TCP   HTTPS      TLS               SigV4        │
+│         ├──► OTel         4317/TCP  OTLP/gRPC  plaintext (default) none       │
+│         └──► Kubernetes API 6443/TCP HTTPS     TLS 1.2+          SA token     │
+│                                                                               │
+│  [Prometheus] ──► 8081/TCP, 9090/TCP, 9091/TCP  HTTP  no TLS  no auth         │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  DATA SERVICES (shared across all tenants, single credential set)             │
+│                                                                               │
+│  [PostgreSQL 12+]   metadata, priority queue, events, checkpoints, leases,    │
+│                     optional async SQL transport; stores user bearer tokens   │
+│                     (pth:Authorization) for life of job record (30d TTL)      │
+│  [S3-compatible]    file content, prefix t-<sha256(tenant)>, single bucket    │
+│  [Redis/Valkey]     llm-d-async request/result queues (async mode only)       │
+│  [OTel Collector]   traces, plaintext gRPC by default                         │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+Unauthenticated Surfaces / Key Risks:
+- API Service 8000/TCP has no in-app auth. Any in-cluster pod that can reach it
+  can act as any tenant by setting X-MaaS-Username (no NetworkPolicy shipped).
+- Missing tenant header silently maps to shared tenant "default".
+- Observability ports 8081/9090/9091 are plaintext and unauthenticated;
+  pprof is available if enablePprof=true (default false).
+- End-user bearer tokens are persisted at rest in PostgreSQL job tags; jobs
+  may fail mid-run when stored tokens expire.
+- OTel export defaults to insecure (plaintext gRPC).
+
+RBAC Summary:
+- No ClusterRoles. API server and processor ServiceAccounts have no RBAC.
+- Role: {gc-fullname}-pod-watcher (namespaced, gated by gc.config.reconciler.enabled)
+  - API Groups: "" -> pods         Verbs: get, list, watch
+  - API Groups: apps -> statefulsets Verbs: get, list, watch
+- RoleBinding: {gc-fullname}-pod-watcher -> SA {gc serviceAccountName}
+  (release namespace)
+
+Authentication & Authorization:
+- /v1/files*, /v1/batches*: none in app; external Gateway (Kuadrant AuthPolicy)
+  verifies Kubernetes token + RateLimitPolicy; app enforces tenant equality
+  on reads (404 on mismatch) and tenant_id filters on lists.
+- Observability endpoints: none; not routed by HTTPRoute; reachable in-cluster.
+- Processor -> inference gateway: forwarded user bearer; SAR on inferencepools
+  at internal gateway (batch-llm-route).
+- GC -> Kubernetes API: in-cluster SA token; namespaced Role.
+
+Service Mesh Configuration:
+- None shipped in this repo. No PeerAuthentication / AuthorizationPolicy /
+  NetworkPolicy. Gateway/AuthPolicy wiring comes from the platform operator
+  and deployment guides.
+
+Secrets:
+- batch-gateway-secrets (Opaque, global.secretName) - keys postgresql-url,
+  redis-url, inference-api-key, s3-secret-access-key; mounted read-only at
+  /etc/.secrets in all three components; manual; no rotation.
+- {apiserver-fullname}-tls (kubernetes.io/tls) - API server HTTPS cert/key;
+  cert-manager Certificate (optional) or manual; auto-rotates with
+  cert-manager (pod reload not observed).
+- Processor TLS CA / client cert files (mounted) - tlsCaCertFile,
+  tlsClientCertFile, tlsClientKeyFile for inference gateway; manual.
+- global.imagePullSecrets (kubernetes.io/dockerconfigjson) - image pulls.
+
+Multi-Tenancy:
+- Tenant boundary: per-user application-level tenant ID (X-MaaS-Username).
+- Shared PostgreSQL (row-level tenant_id), shared bucket/PVC (t-<sha256> prefix),
+  Redis queues per model/pool (not per tenant). No per-tenant concurrency quota.
+
+FIPS / Build:
+- CGO_ENABLED=1, GOEXPERIMENT=strictfipsruntime, dynamic linking,
+  ubi-minimal-pqc runtime (OpenSSL), hermetic Konflux build (gomod prefetch),
+  multi-arch (x86_64, arm64, ppc64le, s390x).
+- Containers: non-root (UID 1001), all capabilities dropped, read-only root FS,
+  RuntimeDefault seccomp.

@@ -1,0 +1,212 @@
+KubeRay Operator (RHOAI 3.7-ea.1) - Security Network Diagram
+Source: architecture/rhoai-3.7-ea.1/kuberay.md (commit d3ebe68, upstream KubeRay 1.7.1)
+Shipped artifact: quay.io/rhoai/odh-kuberay-operator-controller-rhel9 (ray-operator /manager only)
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                        │
+│                                                                              │
+│  [Browser / External User]                                                   │
+│         │                                                                    │
+│         │ Port: 443/TCP                                                      │
+│         │ Protocol: HTTPS                                                    │
+│         │ Encryption: TLS (terminated at Gateway)                            │
+│         │ Auth: Platform Gateway auth (kube-auth-proxy / EnvoyFilter,        │
+│         │       owned by rhods-operator - OUTSIDE THIS REPO)                 │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  INGRESS - namespace openshift-ingress                                       │
+│                                                                              │
+│  [data-science-gateway (Gateway API / Envoy)]                                │
+│  - HTTPRoute <ns>-<cluster> (in platform namespace, created by operator)     │
+│  - Exact /ray/{ns}/{cluster}   -> 302 to /ray/{ns}/{cluster}/#/             │
+│  - Prefix /ray/{ns}/{cluster}/ -> URL rewrite to /                           │
+│  - Cross-namespace backendRef permitted by ReferenceGrant                    │
+│    "kuberay-gateway-access" in user namespace                                │
+│         │                                                                    │
+│         │ Port: 8265/TCP  (Ray dashboard - NOT the 8443 kube-rbac-proxy)     │
+│         │ Protocol: HTTP                                                     │
+│         │ Encryption: NONE (plaintext inside cluster)                        │
+│         │ Auth: NONE at Ray layer; NetworkPolicy admits Gateway pods         │
+│         │ !! Per-RayCluster SAR is NOT enforced on this path (unverified     │
+│         │    from this repo - depends on platform Gateway auth)              │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  USER NAMESPACE (Data Science Project / tenant)                              │
+│  Per-RayCluster head + worker NetworkPolicies (NetworkPolicyController)      │
+│                                                                              │
+│  [<cluster>-head-svc] ClusterIP                                              │
+│  - 8265/TCP  Ray dashboard   HTTP   plaintext   none / Ray token (optional)  │
+│  - 10001/TCP Ray client      gRPC   mTLS (RAY_USE_TLS)                       │
+│  - 6379/TCP  Ray GCS         gRPC   mTLS (per-cluster CA)                    │
+│  - 8080/TCP  Ray metrics     HTTP   plaintext   none                         │
+│  - 8000/TCP  Ray Serve       HTTP   plaintext   none                         │
+│         │                                                                    │
+│         ▼                                                                    │
+│  [Ray Head Pod]                                                              │
+│  - ServiceAccount: <cluster>-oauth-proxy-sa / head SA                        │
+│  - Sidecar: kube-rbac-proxy                                                  │
+│      Port: 8443/TCP HTTPS (self-generated cert)                              │
+│      TLS min version / ciphers from cluster APIServer TLS profile            │
+│      Auth: Bearer -> TokenReview + SubjectAccessReview                       │
+│            (get services/<cluster>-head-svc in cluster namespace)            │
+│      Upstream: http://127.0.0.1:8265/ (loopback)                             │
+│      NetworkPolicy keeps a source-less 8443 ingress rule                     │
+│         ▲                                                                    │
+│         │ Port: 6379/TCP  Protocol: gRPC                                     │
+│         │ Encryption: mTLS (per-cluster CA, RSA-4096 root, 90d leaf certs)   │
+│         │ Auth: Ray TLS certs (ray-head-secret / ray-worker-secret)          │
+│  [Ray Worker Pods]                                                           │
+│                                                                              │
+│  [RayJob Submitter Pod (batch/v1 Job)] --8265/TCP HTTP plaintext-->  head    │
+│      Auth: NetworkPolicy submitter rule; Ray token if authOptions.mode=token │
+│  [Workbench / same-namespace pods]   --8265 HTTP, 10001 gRPC-------> head    │
+│      Auth: none at Ray layer (same-namespace allowed by NetworkPolicy)       │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  PLATFORM NAMESPACE (redhat-ods-applications / $(namespace))                 │
+│                                                                              │
+│  [kuberay-operator Deployment]                                               │
+│  - ServiceAccount: kuberay-operator   SCC: run-as-ray-user (uid 1000)        │
+│  - replicas: 1, strategy: Recreate, leader election commented out           │
+│  - Image: ubi9/ubi-minimal-pqc runtime, UID 65532, strictfipsruntime build  │
+│                                                                              │
+│  Inbound:                                                                    │
+│  - kuberay-webhook-service  443/TCP -> 9443/TCP  HTTPS                       │
+│      TLS: cert-manager self-signed "serving-cert" (kuberay-webhook-server-   │
+│           cert); cluster TLS profile                                         │
+│      Caller: kube-apiserver (CA bundle injected)  failurePolicy: Fail        │
+│      Webhooks: mraycluster.kb.io (mutating), vraycluster.kb.io (validating)  │
+│  - kuberay-operator Svc  8443/TCP  HTTPS  /metrics                           │
+│      TLS: OpenShift service-ca (kuberay-operator-metrics-tls), TLS 1.2+      │
+│      Auth: Bearer -> TokenReview + SAR (controller-runtime filter)           │
+│      NetworkPolicy: only from monitoring namespaces                          │
+│      !! Binary default bind is :8080 and overlay does not pass               │
+│         --metrics-addr -> possible port mismatch (verify in cluster)         │
+│  - Health probes  8082/TCP  HTTP  /healthz /readyz  no auth                  │
+│                                                                              │
+│  Outbound (Egress):                                                          │
+│  - Kubernetes API server     6443/TCP HTTPS TLS 1.2+  SA token  (all CRUD)   │
+│  - <cluster>-head-svc        8265/TCP HTTP  NONE      none / x-ray-          │
+│                                                        authorization Bearer  │
+│                              (RayJob submit/status, RayService Serve config) │
+│  - Ray Serve proxy           8000/TCP HTTP  NONE      none (health checks)   │
+│  - K8s service proxy (opt.)  6443/TCP HTTPS TLS 1.2+  SA token               │
+│                              (--use-kubernetes-proxy)                        │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  MONITORING                                                                  │
+│                                                                              │
+│  [Prometheus] (openshift-monitoring / user-workload / redhat-ods-monitoring) │
+│  - -> kuberay-operator Svc 8443/TCP HTTPS, Bearer (TokenReview/SAR)          │
+│  - -> Ray head metrics 8080/TCP HTTP plaintext, no auth                      │
+│       (admitted only when MONITORING_NAMESPACE is set)                       │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  CLUSTER CONTROL PLANE                                                       │
+│                                                                              │
+│  [Kubernetes API Server]  6443/TCP HTTPS TLS 1.2+                            │
+│  [cert-manager]           issues webhook cert + per-RayCluster PKI           │
+│  [OpenShift service-ca]   issues metrics serving cert                        │
+│  [APIServer/cluster]      TLS profile -> metrics, webhook, kube-rbac-proxy;  │
+│                           operator restarts on profile change                │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- ClusterRole: kuberay-operator  (ClusterRoleBinding -> SA kuberay-operator)
+  - "": configmaps, persistentvolumeclaims, serviceaccounts, services
+        -> create, delete, get, list, patch, update, watch
+  - "": pods -> create, delete, deletecollection, get, list, patch, update, watch
+  - "": pods/proxy, services/status -> get, patch, update; pods/resize -> patch
+  - "": secrets -> create, delete, get, list, update, watch   (cluster-wide)
+  - "": services/proxy -> create, get, patch, update
+  - apps: deployments -> get, list, patch, update, watch
+  - authentication.k8s.io: tokenreviews -> create
+  - authorization.k8s.io: subjectaccessreviews -> create
+  - batch: jobs -> create, delete, get, list, patch, update, watch
+  - cert-manager.io: certificates -> create, get, list, update, watch;
+                     issuers -> create, get, list, watch; certificates/status -> get
+  - coordination.k8s.io: leases -> create, get, list, update
+  - discovery.k8s.io: endpointslices -> get, list, watch
+  - events.k8s.io: events -> create, patch
+  - extensions, networking.k8s.io: ingresses -> full CRUD + watch
+  - gateway.networking.k8s.io: gateways -> create, delete, get, list, update, watch
+                                httproutes, referencegrants -> full CRUD + watch
+  - networking.k8s.io: networkpolicies -> create, delete, get, list, update, watch
+                       ingressclasses -> get, list, watch
+  - operator.openshift.io: kubeapiservers(/status) -> get, list, watch
+  - ray.io: rayclusters, raycronjobs, rayjobs, rayservices -> full CRUD + watch;
+            */finalizers -> update; */status -> get, patch, update
+  - rbac.authorization.k8s.io: clusterroles, clusterrolebindings -> get, list, watch
+                               roles, rolebindings -> create, delete, get, list,
+                               (patch), update, watch
+  - route.openshift.io: routes -> full CRUD + watch
+- ClusterRole: kuberay-tls-profile-role (ClusterRoleBinding)
+  - config.openshift.io: apiservers -> get, list, watch
+- ClusterRole: kuberay-operator-configmap (RoleBinding, platform ns)
+  - "": configmaps -> full CRUD + watch
+- ClusterRole: kuberay-operator-gateway-api (RoleBinding, platform ns)
+  - gateways -> get, list, watch; httproutes, referencegrants -> full CRUD + watch
+- Role: kuberay-operator-leader-election (operator ns)
+  - "", coordination.k8s.io: configmaps, events, leases -> full CRUD + watch
+- Runtime: <cluster> autoscaler Role/RoleBinding per RayCluster (user namespace)
+- SCC: run-as-ray-user (uid 1000, drop ALL, seccomp runtime/default)
+       granted to system:serviceaccount:$(namespace):kuberay-operator
+- User-facing aggregated roles: kuberay-edit-role, kuberay-view-role,
+  ray{job,service,cronjob}-{editor,viewer}-role
+
+Admission Control:
+- MutatingWebhookConfiguration mraycluster.kb.io (failurePolicy: Fail)
+  - Sets odh.ray.io/secure-trusted-network="true", spec.tlsOptions.enabled,
+    platform NetworkPolicy profile, enableIngress=false
+- ValidatingWebhookConfiguration vraycluster.kb.io (failurePolicy: Fail)
+  - Forbids custom egress, extra ingress beyond platform set, unmanaged
+    managedBy values, invalid managed port overrides
+- RayJob / RayService validating handlers registered in-process but not
+  configured in the OpenShift overlay webhook.yaml
+
+Service Mesh Configuration:
+- None. No Istio sidecars / PeerAuthentication defined by this component.
+- Ray-internal mTLS (gRPC/GCS) provided by Ray itself (RAY_USE_TLS) with
+  per-cluster cert-manager PKI.
+
+Network Policies:
+- kuberay-operator-allow-metrics-traffic (operator pod): 8443 from monitoring
+  namespaces; 8082 and 9443 port-only (no source restriction)
+- Per-RayCluster head/worker policies: same cluster, same namespace (8265/
+  10001), operator, Gateway pods, monitoring namespace, RayJob submitters;
+  source-less 8443 rule retained; legacy OpenShift policies kept during
+  migration
+
+Secrets:
+- kuberay-webhook-server-cert (kubernetes.io/tls) - webhook serving cert,
+  cert-manager (selfsigned-issuer -> serving-cert), auto-rotated
+- kuberay-operator-metrics-tls (kubernetes.io/tls) - metrics HTTPS cert,
+  OpenShift service-ca, auto-rotated
+- <cluster>-ca-secret-<uid> (kubernetes.io/tls) - per-RayCluster root CA,
+  RSA-4096, ~10y, renew 30d before; cert-manager
+- ray-head-secret-<cluster> / ray-worker-secret-<cluster> (kubernetes.io/tls)
+  - Ray mTLS leaf certs, 90d, renew 15d before; pods keep old cert until restart
+- <cluster> (Opaque) - Ray auth token (32 bytes crypto/rand) when
+  authOptions.mode=token and no user secret; NOT auto-rotated
+
+Crypto / FIPS:
+- Build: CGO_ENABLED=1 GOEXPERIMENT=strictfipsruntime -tags strictfipsruntime,
+  dynamic link, OpenSSL from ubi-minimal-pqc
+- TLS: cluster APIServer TLSSecurityProfile; CBC/3DES/RC4 banned under any
+  profile; fallback Intermediate (TLS 1.2+, ECDHE-GCM/ChaCha20); ALPN h2,http/1.1
+- No InsecureSkipVerify in operator source; SHA-1 only for pod-template hashing
+- Hermetic Konflux build (Hermeto gomod prefetch), digest-pinned base images,
+  x86_64 / arm64 / ppc64le
+
+Key Security Observations:
+1. Gateway -> Ray dashboard path (8265) bypasses kube-rbac-proxy per-cluster SAR;
+   tenant authorization relies on platform Gateway auth (unverified here).
+2. Operator -> Ray dashboard, Submitter -> dashboard, and Ray metrics are
+   plaintext HTTP; Ray mTLS covers only the gRPC/GCS plane.
+3. Single-replica operator + failurePolicy: Fail webhooks: restarts (including
+   automatic TLS-profile-change restarts) briefly block RayCluster admission.
+4. Possible metrics port mismatch (Service 8443 vs binary bind :8080).
+5. Cluster-wide create/delete on Secrets, Pods, Roles/RoleBindings,
+   NetworkPolicies, Gateways/HTTPRoutes: high-value service account.
+6. Any pod in the same namespace can reach dashboard (8265) and client (10001).
+7. All tenants' HTTPRoutes live in one platform namespace.

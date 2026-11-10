@@ -1,0 +1,164 @@
+rhoai-mcp - Security Network Diagram
+Source: architecture/rhoai-3.7-ea.1/rhoai-mcp.md (commit 51e2343, package 0.1.1)
+Two deploy-time security postures:
+  [SA]   ServiceAccount-as-actor (base, openshift, odh, rhoai overlays)
+  [OIDC] Multi-user OIDC (openshift-oidc, openshift-oidc-mcpserver overlays)
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                         │
+│  [MCP Client / AI Agent]  (Claude Desktop, Copilot, OpenShift Lightspeed)│
+│         │                                                               │
+│         │ Port: 443/TCP                                                 │
+│         │ Protocol: HTTPS                                               │
+│         │ Encryption: TLS (router default)                              │
+│         │ Auth: [SA] NONE   [OIDC] Bearer OCP token or JWT              │
+│         ▼                                                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (OpenShift Router)                                             │
+│                                                                         │
+│  [Route: rhoai-mcp]                                                     │
+│  - Host: cluster-assigned default router host                           │
+│  - Port: 443/TCP (external) → 8000/TCP (pod)                            │
+│  - TLS: Edge termination; HTTP → HTTPS redirect                         │
+│  - Timeout: 300s (OIDC overlay)                                         │
+│         │                                                               │
+│         │ Port: 8000/TCP                                                │
+│         │ Protocol: HTTP (SSE /sse,/messages/ or streamable-http /mcp)  │
+│         │ Encryption: NONE (plaintext router → pod)                     │
+│         │ Auth: Bearer forwarded [OIDC]; none [SA]                      │
+│         ▼                                                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│  CLUSTER INTERNAL (no NetworkPolicy on rhoai-mcp pod; reachable from    │
+│  any namespace on 8000/TCP)                                             │
+│                                                                         │
+│  [Service: rhoai-mcp]  ClusterIP (NodePort in kind)                     │
+│  - Port: 8000/TCP → targetPort http (8000)                              │
+│  - sessionAffinity: ClientIP, 3h timeout [OIDC]                         │
+│         │                                                               │
+│         ▼                                                               │
+│  [rhoai-mcp pod]  replicas: 1                                           │
+│  - Namespace: redhat-ods-applications (RHOAI) / opendatahub (ODH)       │
+│               / rhoai-mcp (base)                                        │
+│  - ServiceAccount: rhoai-mcp                                            │
+│  - Image: quay.io/opendatahub/odh-rhoai-mcp (RELATED_IMAGE override)    │
+│  - Resources: 100m/256Mi requests, 500m/1Gi limits                      │
+│  - Endpoints:                                                           │
+│      /health                              GET   public                  │
+│      /sse, /messages/                     SSE   [SA] none / [OIDC] Bearer│
+│      /mcp                                 RPC   [SA] none / [OIDC] Bearer│
+│      /.well-known/oauth-protected-resource GET  public (OIDC only)      │
+│  - [OIDC] OIDCAuthMiddleware: fail-closed 401 with                      │
+│      WWW-Authenticate: Bearer resource_metadata=...                     │
+│  - [OIDC] SubjectAccessReview tool filtering; SAR error → deny;         │
+│      unmapped tools allowed                                             │
+│  - [SA] Guards only: READ_ONLY_MODE (true in rhoai overlay),            │
+│      ENABLE_DANGEROUS_OPERATIONS=false, managed-by delete guard         │
+│         │                                                               │
+│         ├──────────────────────────────────────────────┐                │
+│         │ Port: 6443/TCP (443 svc)                     │                │
+│         │ Protocol: HTTPS                              │                │
+│         │ Encryption: TLS 1.2+ (verified, SA CA bundle)│                │
+│         │ Auth: [SA] SA token (cluster-wide ClusterRole)                │
+│         │       [OIDC] SA token for TokenReview/SAR;   │                │
+│         │              user Bearer token (user-token)  │                │
+│         │              or SA + Impersonate-User/Group  │                │
+│         ▼                                              │                │
+│  [Kubernetes / OpenShift API server]                   │                │
+│  - Resource CRUD, TokenReview, SubjectAccessReview,    │                │
+│    users.user.openshift.io                             │                │
+│                                                        │                │
+│         ┌──────────────────────────────────────────────┤                │
+│         │ Port: 8080/TCP (preferred)  or  8443/TCP     │                │
+│         │ Protocol: HTTP              /   HTTPS        │                │
+│         │ Encryption: NONE            /   TLS, verification DISABLED    │
+│         │                                 for in-cluster *.svc URLs     │
+│         │ Auth: none                  /   Bearer SA token (kube-rbac-proxy)
+│         ▼                                              │                │
+│  [Model Registry]  (*.odh-model-registries.svc / discovered)            │
+│                                                        │                │
+│         ┌──────────────────────────────────────────────┤                │
+│         │ Port: 8443/TCP                               │                │
+│         │ Protocol: HTTPS                              │                │
+│         │ Encryption: TLS verified (service-serving CA │                │
+│         │   /etc/pki/service-ca/service-ca.crt)        │                │
+│         │ Auth: SA token or MODEL_CATALOG_TOKEN        │                │
+│         ▼                                              │                │
+│  [Model Catalog]  model-catalog.rhoai-model-registries.svc              │
+│  - Optional NetworkPolicy in rhoai-model-registries allows              │
+│    rhoai-mcp → model-catalog on 8080/8443/443                           │
+│                                                        │                │
+│         ┌──────────────────────────────────────────────┘                │
+│         │ Port: 8000/TCP   (remote planner mode only)                   │
+│         │ Protocol: HTTP                                                │
+│         │ Encryption: NONE                                              │
+│         │ Auth: none observed                                           │
+│         ▼                                                               │
+│  [Remote Planner]  backend.planner.svc.cluster.local                    │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                      │
+│                                                                         │
+│  [OIDC Issuer]  oidc_issuer_url   (JWT token mode only)                 │
+│  - Port: 443/TCP HTTPS                                                  │
+│  - Encryption: TLS (httpx default, system CA)                           │
+│  - Auth: none                                                           │
+│  - Purpose: OpenID discovery + JWKS fetch (RS256/ES256; exp/iss/aud)    │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- ClusterRoleBinding: rhoai-mcp → ClusterRole rhoai-mcp → SA rhoai-mcp
+- ClusterRole rhoai-mcp [SA mode: base + openshift overlay]
+  - core: pods, pods/log, services, events, nodes            get, list, watch
+  - core: pods                                               create
+  - core: persistentvolumes                                  create
+  - core: namespaces                                         get, list, watch, create, patch, delete
+  - core: secrets, persistentvolumeclaims                    get, list, watch, create, delete
+  - kubeflow.org: notebooks                                  get, list, watch, create, patch, delete
+  - trainer.kubeflow.org: trainjobs                          get, list, watch, create, update, patch, delete
+  - trainer.kubeflow.org: trainingruntimes                   get, list, watch
+  - trainer.kubeflow.org: clustertrainingruntimes            get, list, watch, create, delete
+  - datasciencepipelinesapplications.opendatahub.io: DSPAs   get, list, watch, create, delete
+  - serving.kserve.io: inferenceservices                     get, list, watch, create, delete
+  - serving.kserve.io: servingruntimes                       get, list, watch, create
+  - storage.k8s.io: storageclasses                           list
+  - datasciencecluster.opendatahub.io: datascienceclusters   get, list, watch   (openshift)
+  - components.platform.opendatahub.io: modelregistries      get, list, watch   (openshift)
+  - template.openshift.io: templates                         get, list, watch   (openshift)
+  - route.openshift.io: routes                               get, list, watch   (openshift)
+  - project.openshift.io: projects                           get, list, watch, patch (openshift)
+  - image.openshift.io: imagestreams                         list               (openshift)
+- ClusterRole rhoai-mcp [OIDC mode: openshift-oidc REPLACES all rules]
+  - authentication.k8s.io: tokenreviews                      create
+  - authorization.k8s.io: subjectaccessreviews               create
+  - user.openshift.io: users                                 get
+
+Authentication & Authorization:
+- [SA]   /sse, /messages/, /mcp: NO authentication. Every caller acts as the
+         rhoai-mcp SA with cluster-wide privileges. Main architectural risk.
+- [OIDC] token-review: opaque OCP token → TokenReview; groups from users API.
+- [OIDC] jwt: JWKS-verified JWT (RS256/ES256, exp/iss/aud required); must use
+         impersonation strategy (user-token + jwt rejected at startup).
+- [OIDC] Downstream K8s calls use the user's effective RBAC.
+- /health, /.well-known/oauth-protected-resource: public.
+
+Service Mesh Configuration:
+- None. No Istio sidecar, PeerAuthentication, or AuthorizationPolicy.
+- No NetworkPolicy protecting the rhoai-mcp pod in the repo.
+
+Secrets / Trust material:
+- ServiceAccount token (projected, kubernetes.io/service-account-token) -
+  in-cluster K8s auth; Bearer for Model Registry 8443 and Model Catalog;
+  auto-rotated by Kubernetes.
+- rhoai-mcp-service-ca (ConfigMap, injected CA bundle) - trust anchor for
+  service-serving certs; OpenShift service-ca operator; auto-rotated.
+- User data-connection Secrets (Opaque, in user namespaces) - S3 credentials
+  created by the connections tools on agent request; no rotation.
+- Workflow HMAC key (RHOAI_MCP_WORKFLOW_HMAC_SECRET) - random per process by
+  default; HMAC-SHA256 tokens not bound to user identity.
+
+Known Security Gaps:
+- Unauthenticated MCP endpoint in SA mode exposed via external Route.
+- TLS verification disabled for in-cluster Model Registry (*.svc) calls;
+  plain HTTP on 8080 preferred over kube-rbac-proxy 8443.
+- Plaintext router → pod hop (edge termination); no server-side TLS.
+- Single replica; no PDB/HPA; no per-user rate limiting.

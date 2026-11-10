@@ -1,0 +1,176 @@
+MODEL REGISTRY (RHOAI 3.7-ea.1) - SECURITY NETWORK DIAGRAM
+Source: architecture/rhoai-3.7-ea.1/model-registry.md
+Images: quay.io/rhoai/odh-model-registry-rhel9 (proxy + catalog roles)
+        quay.io/rhoai/odh-model-registry-job-async-upload-rhel9 (batch Job)
+
+NOTE: The registry (proxy) and catalog servers serve plain HTTP on 8080/TCP with
+NO in-process authentication or authorization. In RHOAI all access control is
+provided by the model-registry-operator (kube-rbac-proxy / Gateway HTTPRoute),
+which lives outside this repo. Steps marked "operator-defined" are inferred.
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                       │
+│                                                                             │
+│  [User Browser]                                                             │
+│         │                                                                   │
+│         │ Port: 443/TCP                                                     │
+│         │ Protocol: HTTPS                                                   │
+│         │ Encryption: TLS 1.2+                                              │
+│         │ Auth: OAuth/OIDC bearer                                           │
+│         ▼                                                                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  INGRESS                                                                    │
+│                                                                             │
+│  [Platform Gateway / odh-dashboard]                                         │
+│  [Dashboard model-registry BFF]  (overlay 0018)                             │
+│         │                                       │                           │
+│         │ Port: 8443/TCP (operator-defined)     │ Port: 8080/TCP via proxy  │
+│         │ Protocol: HTTPS                       │ Protocol: HTTP/HTTPS      │
+│         │ Encryption: TLS                       │ Encryption: proxy-defined │
+│         │ Auth: User bearer token (SAR)         │ Auth: user token at proxy │
+│         ▼                                       ▼                           │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  CLUSTER INTERNAL                                                           │
+│                                                                             │
+│  [Registry auth proxy] (kube-rbac-proxy / Gateway, operator-managed)        │
+│  - TokenReview + SubjectAccessReview                                        │
+│         │                                                                   │
+│         │ Port: 8080/TCP                                                    │
+│         │ Protocol: HTTP                                                    │
+│         │ Encryption: None (in-pod / loopback)                              │
+│         │ Auth: None                                                        │
+│         ▼                                                                   │
+│  [model-registry proxy]  /model-registry proxy                              │
+│  - One Deployment per ModelRegistry instance                                │
+│  - Listen: 8080/TCP plain HTTP (http.ListenAndServe, no TLS)                │
+│  - APIs: /api/model_registry/v1/*, /v1alpha3/* (deprecated)                 │
+│  - Probes: /readyz/isDirty, /readyz/health (unauthenticated)                │
+│  - Service: model-registry-service ClusterIP 8080/TCP                       │
+│  - RISK: direct Service access bypasses all auth; no NetworkPolicy in repo  │
+│         │                                                                   │
+│         │ Port: 3306/TCP (MySQL) or 5432/TCP (PostgreSQL)                   │
+│         │ Protocol: DB wire                                                 │
+│         │ Encryption: Optional TLS 1.2+                                     │
+│         │   InsecureSkipVerify = !VerifyServerCert;                         │
+│         │   --embedmd-database-ssl-verify-server-cert defaults to false     │
+│         │ Auth: DB user/password (Secret); optional client cert             │
+│         ▼                                                                   │
+│  [Registry DB - MySQL 8.x / PostgreSQL] (separate DB per instance)          │
+│                                                                             │
+│  ─────────────────────────────────────────────────────────────────────────  │
+│                                                                             │
+│  [Catalog proxy] (operator-managed)                                         │
+│         │ Port: 8080/TCP  Protocol: HTTP  Encryption: None  Auth: None      │
+│         ▼                                                                   │
+│  [model-catalog]  /model-registry catalog  (single shared instance)         │
+│  - Listen: 0.0.0.0:8080 plain HTTP, no in-process auth                      │
+│  - APIs: /api/model_catalog/v1alpha1, /api/mcp_catalog/v1alpha1,            │
+│          /api/agent_catalog/v1alpha1, /api/skill_catalog/v1,                │
+│          /api/serving_runtime_catalog/v1, /healthz, /readyz                 │
+│  - Leader election: pglock advisory lock "catalog-leader" (60s/15s)         │
+│  - Init containers: odh-model-performance-data-rhel9:v3.0.0 (RHOAI),        │
+│    odh-model-metadata-collection (ODH) -> /shared-data emptyDir             │
+│  - Service: model-catalog ClusterIP 8080/TCP                                │
+│         │                                                                   │
+│         │ Port: 5432/TCP                                                    │
+│         │ Protocol: PostgreSQL                                              │
+│         │ Encryption: Not configured (libpq PGSSLMODE unset in manifests)   │
+│         │ Auth: PGUSER/PGPASSWORD from Secret model-catalog-postgres        │
+│         ▼                                                                   │
+│  [model-catalog-postgres] ClusterIP 5432/TCP                                │
+│                                                                             │
+│  ─────────────────────────────────────────────────────────────────────────  │
+│                                                                             │
+│  [Dashboard BFF] ──► [Kubernetes API 6443/TCP]                              │
+│     HTTPS, TLS 1.2+, user/SA token; creates Job, Secret, ConfigMap          │
+│         │                                                                   │
+│         ▼                                                                   │
+│  [async-upload Job]  (user project namespace)                               │
+│  - Image: odh-model-registry-job-async-upload-rhel9 (Python 3.12, AIPCC)    │
+│  - No inbound port; HEALTHCHECK python -m job.healthcheck                   │
+│  - Credentials as env/args; must be Secret-backed by the caller             │
+│         │                                                                   │
+│         │ Port: 443/TCP  Protocol: HTTPS  Encryption: TLS (custom CA opt.)  │
+│         │ Auth: Bearer user token                                           │
+│         ▼                                                                   │
+│  [Registry auth proxy] -> [model-registry proxy]                            │
+│                                                                             │
+│  ─────────────────────────────────────────────────────────────────────────  │
+│                                                                             │
+│  [ISVC controller library] (inside model-registry-operator)                 │
+│  - Kubernetes API 6443/TCP HTTPS TLS 1.2+, ServiceAccount token             │
+│    (watch InferenceService, get Service, patch labels/finalizer)            │
+│  - Model Registry 443/TCP HTTPS or 8080/TCP HTTP, Bearer token              │
+│    TLS 1.2; InsecureSkipVerify=true when skipTLSVerify is set               │
+│                                                                             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES (Egress)                                                 │
+│                                                                             │
+│  [huggingface.co]       443/TCP HTTPS, TLS (system trust), opt. HF_API_KEY  │
+│                         <- catalog leader                                   │
+│  [Git remotes]          443/80/9418 TCP https/http/git, TLS for https only, │
+│                         opt. skill-catalog-git-credentials <- catalog       │
+│                         (git CLI not installed in RHOAI runtime image)      │
+│  [S3 endpoints]         443/TCP HTTPS, TLS, AWS access keys <- Job          │
+│  [OCI registries]       443/TCP HTTPS, TLS verify on by default             │
+│                         (--destination-oci-enable-tls-verify=false disables)│
+│                         registry creds <- Job                               │
+│  [Sigstore]             Fulcio/Rekor/TUF 443/TCP HTTPS, projected SA OIDC   │
+│                         token <- Job (only with --sign)                     │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary (upstream controller manifests; RHOAI uses operator-owned RBAC):
+- ClusterRole: controller-model-registry-manager-role
+  - "" services: get, list, watch
+  - serving.kserve.io inferenceservices: get, list, patch, update, watch
+  - serving.kserve.io inferenceservices/finalizers: create, delete, get, list,
+    patch, update, watch
+- ClusterRole: controller-metrics-auth-role
+  - authentication.k8s.io tokenreviews: create
+  - authorization.k8s.io subjectaccessreviews: create
+- ClusterRole: controller-metrics-reader
+  - nonResourceURL /metrics: get
+- Role: controller-leader-election-role (ns: kubeflow)
+  - "" configmaps, coordination.k8s.io leases: create, delete, get, list,
+    patch, update, watch
+  - "" events: create, patch
+- Bindings (SA controller-controller-manager):
+  - controller-model-registry-manager-rolebinding -> manager-role (ClusterRole)
+  - controller-metrics-auth-rolebinding -> metrics-auth-role (ClusterRole)
+  - controller-leader-election-rolebinding -> leader-election-role (Role)
+- Registry and catalog servers: no Kubernetes RBAC, no in-process authz.
+
+Authentication & Authorization:
+- /api/model_registry/* (8080): none in-process. RHOAI: kube-rbac-proxy/Gateway
+  (operator). Upstream: Istio AuthorizationPolicy ALLOW ingress-gateway SA, or
+  kubeflow-namespace callers with Authorization header and no kubeflow-userid.
+- /api/*_catalog/* (8080): none in-process; upstream ships no
+  AuthorizationPolicy for the catalog.
+- :8443/metrics (upstream controller): TokenReview + SubjectAccessReview,
+  controller-runtime self-signed TLS, HTTP/2 disabled.
+- :8081/healthz,/readyz (upstream controller): unauthenticated probes.
+
+Service Mesh Configuration (upstream Kubeflow only, not used in RHOAI):
+- VirtualService model-registry on kubeflow-gateway, /api/model_registry/
+- VirtualService model-catalog, model-registry-ui
+- DestinationRule: ISTIO_MUTUAL
+- AuthorizationPolicy: see above
+
+Secrets:
+- model-catalog-postgres (Opaque) - catalog DB POSTGRES_USER/POSTGRES_PASSWORD;
+  kustomize secretGenerator dev defaults / operator; no rotation
+- model-catalog-hf-api-key (Opaque, optional) - Hugging Face API key; no rotation
+- skill-catalog-git-credentials (Opaque, optional) - git creds; admin; no rotation
+- mysql-secret (Opaque) - registry DB username/password (upstream); no rotation
+- registry-redhat-io-credentials (kubernetes.io/dockerconfigjson) - pull secret
+  for performance-data init image (RHOAI overlay)
+- Job credentials (Opaque, env/mounted) - AWS keys, OCI creds, registry token;
+  created per Job by BFF/dashboard; no rotation
+
+Key Risks:
+1. No in-process auth on registry/catalog; a reachable Service = full
+   unauthenticated read/write. No NetworkPolicy for these Services in repo.
+2. DB client TLS skips server cert verification by default.
+3. Catalog Postgres connection has no TLS configured in manifests.
+4. ISVC controller optional InsecureSkipVerify; Job optional OCI TLS-verify off.
+5. DB cipher list option includes non-FIPS suites (CBC-SHA, ChaCha20).

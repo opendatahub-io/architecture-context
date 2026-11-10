@@ -1,0 +1,50 @@
+sequenceDiagram
+    autonumber
+    participant User as ODH Dashboard / User
+    participant API as Kubernetes API<br/>6443/TCP HTTPS
+    participant MWH as ODH Mutating Webhook<br/>443→8443/TCP HTTPS
+    participant VWH as ODH Validating Webhook<br/>443→8443/TCP HTTPS
+    participant ODH as odh-notebook-controller
+    participant KF as notebook-controller<br/>(Notebook + Culling)
+    participant Browser as Browser
+    participant GW as data-science-gateway<br/>443/TCP HTTPS
+    participant KRP as kube-rbac-proxy sidecar<br/>8443/TCP HTTPS
+    participant NB as Notebook container<br/>127.0.0.1:8888 HTTP
+    participant Prom as Prometheus<br/>(openshift-monitoring)
+
+    rect rgb(230, 240, 255)
+    Note over User,KF: Flow 1 - Notebook creation
+    User->>API: Create Notebook CR<br/>TLS 1.2+, user bearer token
+    API->>MWH: POST /mutate-notebook-v1<br/>TLS (cluster profile, service-ca)
+    MWH-->>API: Patch: reconciliation lock, image from ImageStream,<br/>CA bundle / runtime images / Elyra / Feast mounts,<br/>MLflow + proxy env, kube-rbac-proxy sidecar
+    API->>VWH: POST /validate-notebook-v1<br/>TLS
+    VWH-->>API: Allow / deny (hostNetwork, hostPath,<br/>privileged, foreign SA, MLflow annotation)
+    ODH->>API: Create SA, kube-rbac-proxy Service/CM/CRB,<br/>NetworkPolicies, ReferenceGrant, HTTPRoute,<br/>RoleBindings, Secrets (SA token, TLS 1.2+)
+    ODH->>API: Release reconciliation lock
+    KF->>API: Create StatefulSet + Service (80→8888)<br/>SA token, TLS 1.2+
+    end
+
+    rect rgb(230, 255, 230)
+    Note over Browser,NB: Flow 2 - Workbench access (inject-auth=true)
+    Browser->>GW: HTTPS /notebook/{ns}/{name}<br/>TLS, platform auth at gateway
+    GW->>KRP: HTTPRoute backend {nb}-kube-rbac-proxy:8443<br/>TLS (service-ca), bearer / X-Auth-Request-* headers
+    KRP->>API: TokenReview + SubjectAccessReview<br/>get kubeflow.org/notebooks/{name} (auth-delegator)
+    API-->>KRP: Allowed
+    KRP->>NB: Proxy HTTP (loopback, plaintext)
+    NB-->>KRP: Response
+    KRP-->>GW: Response (TLS)
+    GW-->>Browser: Response
+    end
+
+    rect rgb(255, 240, 230)
+    Note over KF,NB: Flow 3 - Idle culling (ENABLE_CULLING=true)
+    KF->>NB: GET http://{nb}.{ns}.svc:80/notebook/{ns}/{nb}/api/kernels<br/>plaintext HTTP, no auth, 10s timeout
+    NB-->>KF: Kernel activity
+    KF->>API: Annotate kubeflow-resource-stopped, scale STS to 0<br/>SA token, TLS 1.2+
+    end
+
+    rect rgb(245, 235, 255)
+    Note over Prom,KF: Flow 4 - Metrics scraping
+    Prom->>ODH: GET /metrics (Service 8443 → 8080)<br/>TLS service-ca, bearer → TokenReview/SAR
+    Prom->>KF: GET /metrics :8443<br/>TLS service-ca, bearer → TokenReview/SAR
+    end

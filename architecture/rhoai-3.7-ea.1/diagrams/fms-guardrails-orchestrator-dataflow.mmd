@@ -1,0 +1,61 @@
+sequenceDiagram
+    participant Client as Client<br/>(via Route / auth proxy)
+    participant Orch as Orchestrator<br/>8033/TCP HTTP(S)<br/>optional TLS/mTLS
+    participant Chunker as Chunker service<br/>8085/TCP gRPC
+    participant Det as Detector services<br/>8080/TCP HTTP(S)
+    participant LLM as OpenAI-compatible LLM<br/>8080/TCP HTTP(S)
+    participant TGIS as TGIS / caikit-nlp<br/>8033 / 8085 TCP gRPC
+    participant Health as Orchestrator health<br/>8034/TCP HTTP
+    participant OTel as OTLP collector<br/>4317 / 4318 TCP
+
+    rect rgb(230, 240, 255)
+    Note over Client,LLM: Flow 1 - Guardrailed chat completion (/api/v2/chat/completions-detection, only if openai configured)
+    Client->>Orch: POST /api/v2/chat/completions-detection<br/>X-Forwarded-Access-Token / passthrough headers
+    Orch->>Chunker: Input chunking (non-whole-doc chunkers)<br/>gRPC, optional mTLS, no auth
+    Chunker-->>Orch: Chunks
+    Orch->>Det: POST /api/v1/text/contents (input detectors)<br/>Bearer (forwarded or api_token)
+    Det-->>Orch: Input detections
+    alt Input detections block
+        Orch-->>Client: Response with detections/warnings (LLM skipped)
+    else Allowed
+        Orch->>LLM: POST /v1/chat/completions<br/>Bearer, SSE if streaming
+        LLM-->>Orch: Completion / SSE chunks
+        Orch->>Det: Output detection per chunk<br/>batched and ordered for streams
+        Det-->>Orch: Output detections
+        Orch-->>Client: Completion + detections/warnings<br/>JSON or SSE
+    end
+    end
+
+    rect rgb(235, 250, 235)
+    Note over Client,Det: Flow 2 - Standalone content detection (/api/v2/text/detection/content)
+    Client->>Orch: POST /api/v2/text/detection/content<br/>passthrough headers
+    Orch->>Chunker: Chunk text (gRPC, optional mTLS)
+    Chunker-->>Orch: Chunks
+    par Concurrent detector fan-out
+        Orch->>Det: POST /api/v1/text/contents<br/>Bearer / passthrough
+        Det-->>Orch: Detections
+    end
+    Orch-->>Client: Aggregated detections above threshold
+    end
+
+    rect rgb(255, 245, 230)
+    Note over Client,TGIS: Flow 3 - Classification with TGIS generation (/api/v1/task/classification-with-text-generation)
+    Client->>Orch: POST /api/v1/task/classification-with-text-generation
+    Orch->>Chunker: Input chunking (gRPC)
+    Orch->>Det: Input detection (HTTP, Bearer)
+    Orch->>TGIS: fmaas.GenerationService/Generate<br/>gRPC, optional mTLS, headers as metadata
+    TGIS-->>Orch: Generated text
+    Orch->>Chunker: Output chunking (gRPC)
+    Orch->>Det: Output detection (HTTP, Bearer)
+    Orch-->>Client: Generated text + detections
+    end
+
+    rect rgb(245, 235, 245)
+    Note over Health,OTel: Flow 4 - Health and telemetry
+    Note left of Health: Kubelet / monitoring calls<br/>GET /health or /info<br/>plain HTTP, no auth
+    Health->>Det: GET /health (HTTP)
+    Health->>Chunker: grpc.health.v1.Health/Check
+    Health->>TGIS: grpc.health.v1.Health/Check
+    Health->>LLM: GET /health
+    Orch->>OTel: OTLP traces + metrics<br/>plaintext by default
+    end

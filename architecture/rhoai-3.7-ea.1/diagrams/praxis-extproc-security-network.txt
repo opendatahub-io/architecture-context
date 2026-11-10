@@ -1,0 +1,152 @@
+praxis-extproc - Security Network Diagram (RHOAI 3.7-ea.1)
+Source: architecture/rhoai-3.7-ea.1/praxis-extproc.md
+Image: quay.io/rhoai/odh-praxis-extproc-rhel9 (Konflux 3.7.0-ea.1, commit dc0e953)
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                         │
+│                                                                               │
+│  [Client - MaaS API consumer]                                                 │
+│         │                                                                     │
+│         │ Port: 443/TCP                                                       │
+│         │ Protocol: HTTPS                                                     │
+│         │ Encryption: TLS (gateway cert)                                      │
+│         │ Auth: API key / Bearer token (validated later by Kuadrant)          │
+│         ▼                                                                     │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  INGRESS - Namespace: openshift-ingress                                       │
+│                                                                               │
+│  [maas-default-gateway - Istio/OSSM 3 Envoy]                                  │
+│  - HTTP filter order (inserted by EnvoyFilter payload-processing):            │
+│      ext_proc.ipp-pre  →  Kuadrant Wasm  →  ext_proc.ipp  →  (EPP ext_proc)   │
+│                                                         →  router             │
+│  - Both praxis ext_proc filters: failure_mode_allow: false (FAIL CLOSED)      │
+│  - ext_proc timeout: 300s                                                     │
+│  - ext_proc disabled on maas-api-route rules 0-3                              │
+│    (/v1/models, /v1/subscriptions, /v1/api-keys, /maas-api/*)                 │
+│  - Dedicated CLUSTERs (not Istio outbound|*):                                 │
+│      payload-pre-processing-extproc, payload-processing-extproc               │
+│      circuit breakers: 8 connections / pending / requests / streams           │
+│         │                                                                     │
+│         │ Port: 9004/TCP                                                      │
+│         │ Protocol: gRPC over HTTP/2 (ALPN h2)                                │
+│         │ Encryption: TLS 1.2/1.3, SIMPLE; SNI + SAN pinned;                  │
+│         │             server cert verified against service-ca.crt             │
+│         │ Auth: None at app layer (server-side TLS only; mTLS not configured) │
+│         │ Access control: NetworkPolicy - ingress only from openshift-ingress │
+│         │   pods labelled gateway.istio.io/managed: istio.io-gateway-controller│
+│         ▼                                                                     │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  CLUSTER INTERNAL - Namespace: openshift-ingress (NOT in mesh, no sidecar)    │
+│                                                                               │
+│  [payload-pre-processing]  (pre-auth, BBR chain, /etc/praxis/pre-extproc.yaml)│
+│  - ServiceAccount: payload-processing                                         │
+│  - Service: ClusterIP 9004/TCP (appProtocol HTTP2)                            │
+│  - TLS Secret: payload-pre-processing-tls (service-ca)                        │
+│  - Strips caller X-Gateway-Model-Name; sets it from JSON body /model;         │
+│    llmisvc_model_provider_resolver resolves provider/publisher                │
+│                                                                               │
+│  [payload-processing]      (post-auth, IPP chain, /etc/praxis/extproc.yaml)   │
+│  - ServiceAccount: payload-processing                                         │
+│  - Service: ClusterIP 9004/TCP (appProtocol HTTP2)                            │
+│  - TLS Secret: payload-processing-tls (service-ca)                            │
+│  - Strips authorization, x-api-key, x-origin-cluster, ~20 x-maas-*            │
+│    identity/tenant/subscription headers; adds request ID;                     │
+│    processes BUFFERED responses                                               │
+│                                                                               │
+│  Common per pod:                                                              │
+│  - replicas: 1, no PDB/HPA; limits 512Mi / 500m                               │
+│  - max_body_bytes 10 MiB (413 ImmediateResponse); GRPC_MAX_RECV_MSG_SIZE=11Mi │
+│  - Hardened securityContext; USER 1001; preStop sleep 5s                      │
+│  - Ports:                                                                     │
+│      9004/TCP  gRPC ExtProc   TLS 1.2/1.3       no client auth                │
+│      50052/TCP gRPC health    plaintext         no auth (kubelet only)        │
+│      9090/TCP  HTTP metrics   plaintext         /metrics TokenReview+SAR,     │
+│                                                 /healthz open                 │
+│         │                         │                        │                  │
+│         │ (via gateway router)    │ Port: 443/6443 TCP     │ Port: 53/5353    │
+│         │ HTTP/HTTPS per backend  │ HTTPS, TLS (OpenSSL)   │ UDP/TCP DNS      │
+│         │ Credentials removed     │ Auth: pod SA token     │ No encryption    │
+│         ▼                         ▼                        ▼                  │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  BACKENDS / PLATFORM SERVICES                                                 │
+│                                                                               │
+│  [KServe LLMInferenceService backends]  - reached by Envoy, not praxis        │
+│  [Kubernetes API server]  - TokenReview + SubjectAccessReview for /metrics    │
+│  [Cluster DNS]                                                                │
+│                                                                               │
+│  Optional egress (none in shipped ODH chains): filter subrequests such as     │
+│  AWS SigV4 upstreams, Postgres response store (cert auth), guardrails -       │
+│  443/TCP HTTPS, rustls with OpenSSL provider. NetworkPolicy egress allows     │
+│  only DNS + 443/6443.                                                         │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+MONITORING PATH
+  [Prometheus prometheus-k8s, redhat-ods-monitoring]
+         │ Port: 9090/TCP  Protocol: HTTP  Encryption: None (plaintext)
+         │ Auth: Bearer SA token → TokenReview + SAR (get nonResourceURL /metrics)
+         │ NetworkPolicy allows: openshift-monitoring,
+         │   openshift-user-workload-monitoring, redhat-ods-monitoring
+         ▼
+  [payload-processing-metrics Service] → 200 metrics, or 401/403
+
+PROBE PATH
+  [kubelet] → 50052/TCP gRPC health (plaintext, no auth)
+    readiness: grpc probe, service envoy.service.ext_proc.v3.ExternalProcessor
+    liveness:  tcpSocket
+    SERVING only after pipeline build + FIPS requirements met; NOT_SERVING on drain
+
+RBAC Summary:
+- ClusterRole: payload-processing-metrics-auth
+  - API Group: authentication.k8s.io   Resources: tokenreviews          Verbs: create
+  - API Group: authorization.k8s.io    Resources: subjectaccessreviews  Verbs: create
+  - Bound via ClusterRoleBinding payload-processing-metrics-auth
+    → SA openshift-ingress/payload-processing
+- ClusterRole: payload-processing-metrics-reader
+  - Non-resource URL: /metrics         Verbs: get
+  - Bound via ClusterRoleBinding payload-processing-metrics-reader
+    → SA redhat-ods-monitoring/prometheus-k8s
+- Note: an earlier payload-processing-reader role (cluster-scoped secrets get)
+  was intentionally removed and must not be restored.
+
+Service Mesh / Istio Configuration:
+- praxis-extproc pods are NOT mesh members (Istio metadata-exchange frames
+  cause HTTP/2 protocol_error), hence custom EnvoyFilter CLUSTERs.
+- EnvoyFilter payload-processing (HTTP_FILTER + CLUSTER on maas-default-gateway)
+  - Anchored relative to Kuadrant Wasm (4 alternative subfilter names, incl.
+    misspelled extenstions.istio.io variant)
+  - Removes and re-inserts Istio's EPP envoy.filters.http.ext_proc before the
+    router (mirrors Istio <=1.31 rendering) - Istio/OSSM upgrade coupling risk
+- DestinationRules payload-processing / payload-pre-processing: TLS SIMPLE,
+  service-CA trust, SNI/SAN.
+- No PeerAuthentication / AuthorizationPolicy.
+
+Network Policy:
+- Ingress 9004/TCP: only gateway pods in openshift-ingress
+- Ingress 9090/TCP: monitoring namespaces only
+- Ingress 50052/TCP: not allowed (kubelet probes bypass)
+- Egress: DNS 53/5353, TCP 443/6443
+
+Secrets:
+- payload-processing-tls (kubernetes.io/tls) - post-auth listener cert/key,
+  mounted /etc/tls/private, provisioned by OpenShift service-ca, auto-rotated;
+  process reloads only on restart (Stakater Reloader annotation required)
+- payload-pre-processing-tls (kubernetes.io/tls) - pre-auth listener cert/key,
+  same provisioning and restart caveat
+- Projected SA token (automountServiceAccountToken: true) - TokenReview/SAR calls
+
+Crypto / FIPS:
+- Listener: OpenSSL SslAcceptor mozilla_modern_v5 + TLS 1.2 re-enabled;
+  TLS 1.2 ECDHE-ECDSA/RSA AES-GCM + CHACHA20-POLY1305 only; ALPN h2
+- Outbound: rustls with a single OpenSSL-backed CryptoProvider; kube uses openssl-tls
+- Build: OPENSSL_NO_VENDOR=1, dynamic system OpenSSL, UBI 9 minimal PQC runtime,
+  features responses,aws-sigv4,store-postgres-cert-auth (policy engine excluded)
+- PRAXIS_REQUIRE_FIPS runtime gate exists but is NOT set in the deploy manifests
+- ring / aws-lc-rs present in Cargo.lock; verify with make fips-check / cargo xtask fips
+
+Key Risks:
+- Fail-closed + replicas 1 + no PDB: pod restart blocks inference traffic
+- No client authentication on gRPC 9004 (relies on NetworkPolicy)
+- Shared 8-request circuit breaker across all tenants (noisy-neighbour)
+- Header strip list must stay in sync with MaaS x-maas-* header names
+- Body/memory limits must be kept in step across ConfigMap, Deployment env,
+  and EnvoyFilter

@@ -1,0 +1,36 @@
+sequenceDiagram
+    participant VLLM as vLLM pod<br/>ZMQ PUB 5557/TCP
+    participant EPP as EPP scheduler<br/>kvcache.Indexer (in-process)
+    participant Tok as UDS tokenizer sidecar<br/>unix socket, gRPC
+    participant HF as Hugging Face Hub<br/>443/TCP HTTPS
+    participant Idx as kvblock.Index<br/>in-memory or Redis 6379/TCP
+    participant PVC as Shared KV-cache PVC<br/>/kv-cache
+    participant Ev as PVC evictor<br/>Go Deployment
+
+    Note over VLLM,Idx: Flow 2 - KV event ingestion (write path)
+    VLLM->>EPP: KVEvents BlockStored/BlockRemoved<br/>ZMTP, msgpack, topic kv@...<br/>No encryption, no auth
+    EPP->>Idx: Update index (FNV-32a sharded worker)<br/>in-process or RESP, TLS only if rediss://
+
+    Note over EPP,Idx: Flow 1 - Precise prefix-cache scoring (read path)
+    EPP->>Tok: Tokenize / RenderChatCompletion<br/>gRPC over UDS, insecure, pod-local
+    opt First use of a model (InitializeTokenizer)
+        Tok->>HF: Download tokenizer files<br/>HTTPS TLS, optional HF_TOKEN
+        HF-->>Tok: tokenizer/config files (trust_remote_code=True)
+    end
+    Tok-->>EPP: token IDs (+ offsets / mm features)
+    EPP->>EPP: Hash tokens to block keys<br/>FNV-64a + canonical CBOR
+    EPP->>Idx: Lookup block keys for candidate pods
+    Idx-->>EPP: pods holding blocks
+    EPP->>EPP: GetPodScores returns prefix-hit scores
+
+    Note over VLLM,Ev: Flow 3 - PVC eviction (off request path)
+    VLLM->>PVC: Write offloaded .bin blocks<br/>POSIX FS, UID/fsGroup
+    loop every 0.5 s
+        Ev->>PVC: statfs (usage %)
+    end
+    alt usage above 85%
+        Ev->>PVC: crawl, stat atime, unlink cold .bin until 70%
+        opt STORAGE_EVENTS_ENDPOINT set
+            Ev-)EPP: BlockRemoved, ZMTP PUB<br/>topic kv@SHARED_STORAGE@model<br/>No CURVE auth
+        end
+    end

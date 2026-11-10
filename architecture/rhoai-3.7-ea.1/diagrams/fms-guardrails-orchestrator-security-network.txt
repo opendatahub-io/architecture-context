@@ -1,0 +1,124 @@
+FMS Guardrails Orchestrator (fms-guardrails-orchestr8 0.18.3) - Security Network Diagram
+Source: architecture/rhoai-3.7-ea.1/fms-guardrails-orchestrator.md (commit 8ae9a7f, branch rhoai-3.7-ea.1)
+NOTE: This repo ships no Kubernetes manifests. The Service, Route, NetworkPolicy, namespace
+and ServiceAccount come from the deployer, and the deployer for this release is NOT established.
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                        │
+│                                                                              │
+│  [Client application]                                                        │
+│         │                                                                    │
+│         │ Port: 443/TCP                                                      │
+│         │ Protocol: HTTPS                                                    │
+│         │ Encryption: TLS (Route/Gateway, deployer-defined)                  │
+│         │ Auth: user credentials -> OAuth / kube-auth proxy (deployer)       │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (deployer-provided, NOT defined in this repo)                       │
+│                                                                              │
+│  [OpenShift Route / Gateway + auth proxy]                                    │
+│  - Sets X-Forwarded-Access-Token on forwarded requests                       │
+│         │                                                                    │
+│         │ Port: 8033/TCP                                                     │
+│         │ Protocol: HTTP/1.1 or HTTP/2 (JSON, SSE, NDJSON)                   │
+│         │ Encryption: Optional TLS 1.2/1.3 (rustls + ring, default suites)   │
+│         │             Optional mTLS if TLS_CLIENT_CA_CERT_PATH is set        │
+│         │ Auth: none in-process; X-Forwarded-Access-Token / passthrough hdrs │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  CLUSTER INTERNAL - Orchestrator pod (stateless, no Kubernetes API access)   │
+│                                                                              │
+│  [Guardrails server]  0.0.0.0:8033/TCP                                       │
+│  - Routes: /api/v1/task/{,server-streaming-}classification-with-text-generation│
+│            /api/v2/text/generation-detection                                 │
+│            /api/v2/text/detection/{content,stream-content,chat,context,generated}│
+│            /api/v2/{chat,text}/completions-detection (only if openai set)    │
+│  - No caller authorization: anyone reaching 8033 can use every configured    │
+│    detector and LLM                                                          │
+│  - Image: odh-fms-guardrails-orchestrator-rhel9 (ubi9-minimal-pqc), UID 1001 │
+│                                                                              │
+│  [Health server]  0.0.0.0:8034/TCP   *** UNAUTHENTICATED ***                 │
+│  - Protocol: HTTP (plaintext, always)                                        │
+│  - /health: liveness, returns version                                        │
+│  - /info: fans out health checks to EVERY downstream (amplification risk if  │
+│    8034 is reachable from outside the pod)                                   │
+│         ▲                                                                    │
+│         │ Port: 8034/TCP, HTTP, no encryption, no auth                       │
+│  [Kubelet / monitoring]                                                      │
+│                                                                              │
+│  Egress from orchestrator pod:                                               │
+│         │                                                                    │
+│         ├─► [Detector services]  8080/TCP (default)                          │
+│         │     Protocol: HTTP/HTTPS, Detector API                             │
+│         │       /api/v1/text/{contents,chat,context/doc,generation}          │
+│         │     Encryption: Optional TLS/mTLS per `tls` config                 │
+│         │       insecure: true => NoVerifier (no cert/signature check, SHA-1)│
+│         │     Auth: Bearer (api_token env var OR rewritten forwarded token), │
+│         │           passthrough headers                                      │
+│         │     Health: GET /health on 8080 (8081 in example config)           │
+│         │                                                                    │
+│         ├─► [Chunker services]  8085/TCP (default)                           │
+│         │     Protocol: gRPC (HTTP/2), caikit.runtime.Chunkers.ChunkersService│
+│         │     Encryption: Optional mTLS (client keypair REQUIRED; unwrap()   │
+│         │                 panics on server-only TLS)                         │
+│         │     Auth: none                                                     │
+│         │                                                                    │
+│         ├─► [TGIS generation]  8033/TCP (default)                            │
+│         │     Protocol: gRPC, fmaas.GenerationService                        │
+│         │     Encryption: Optional mTLS                                      │
+│         │     Auth: passthrough headers as gRPC metadata                     │
+│         │                                                                    │
+│         ├─► [caikit-nlp]  8085/TCP (default)                                 │
+│         │     Protocol: gRPC, caikit.runtime.Nlp.NlpService                  │
+│         │     Encryption: Optional mTLS                                      │
+│         │     Auth: passthrough headers as gRPC metadata                     │
+│         │                                                                    │
+│         ├─► [OpenAI-compatible LLM - vLLM / KServe]  8080/TCP (default)      │
+│         │     Protocol: HTTP/HTTPS (JSON, SSE)                               │
+│         │       /v1/chat/completions, /v1/completions, /tokenize             │
+│         │     Encryption: Optional TLS/mTLS                                  │
+│         │     Auth: Bearer (api_token env var OR forwarded token)            │
+│         │                                                                    │
+│         └─► [OTLP collector]  4317/TCP (gRPC) or 4318/TCP (HTTP)             │
+│               Encryption: none by default (http:// endpoints)                │
+│               Auth: none                                                     │
+│                                                                              │
+│  gRPC client-side load balancing: ginepro fork (DNS over headless Services)  │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- None. The orchestrator does not call the Kubernetes API, and the repo defines no
+  ClusterRoles, Roles, RoleBindings, or ServiceAccounts.
+
+Authentication & Authorization:
+- 8033 all routes : optional TLS / mTLS (rustls WebPkiClientVerifier, src/server/tls.rs:30-63).
+                    mTLS only when a client CA is configured; otherwise no caller auth.
+- /api/v1/*, /api/v2/* : passthrough_headers allow-list (empty by default) copied downstream.
+- /api/v1/*, /api/v2/* : X-Forwarded-Access-Token -> Authorization: Bearer
+                    (rewrite_forwarded_access_header: true; expects upstream auth proxy).
+- /health, /info  : no auth, plain HTTP on 8034.
+- Outbound HTTP   : static Bearer api_token (config value = env var name, src/clients/http.rs:151-160).
+                    Shared by all callers of the instance.
+
+Service Mesh Configuration:
+- None defined in repo (no PeerAuthentication, AuthorizationPolicy, or NetworkPolicy).
+
+Secrets (all mounted/provided by the deployer; none auto-rotate, restart required):
+- Server TLS cert/key (TLS_CERT_PATH, TLS_KEY_PATH) - kubernetes.io/tls mounted files
+  (e.g. OpenShift service-serving certs / cert-manager); encrypted keys unsupported.
+- Server client CA (TLS_CLIENT_CA_CERT_PATH) - Opaque/ConfigMap mounted file, enables mTLS.
+- Downstream client TLS (tls.<name>.cert_path / key_path / client_ca_cert_path) - mounted files.
+  NOTE: client_ca_cert_path means "CA to verify the server" in the gRPC client path,
+  but the server CLI flag of the same name means "CA to verify clients".
+- Downstream API tokens (api_token: <ENV_VAR_NAME>) - env var, typically sourced from a Secret.
+
+Crypto / FIPS:
+- Data-plane TLS: rustls 0.23 with ring 0.17 (NOT FIPS validated), TLS 1.2 + 1.3, default suites.
+- System OpenSSL linked dynamically only through reqwest native-tls (OTLP HTTP exporter).
+- No-TLS HTTP client path also builds the connector with NoVerifier (src/clients.rs:237-238).
+- FIPS posture: NOT established; likely non-compliant for data-plane TLS.
+
+Build / Supply chain:
+- Konflux hermetic build (Hermeto cargo + rpm prefetch), rpms.lock.yaml, Cargo.lock.
+- protoc built from source (protobuf-src); git crates: ginepro (runtime), mocktail (dev).
+- Tekton PR pipeline labels are stale (rhoai-v3-6 / 3.6.0).

@@ -1,0 +1,44 @@
+sequenceDiagram
+    autonumber
+    participant EH as eval-hub service
+    participant K8s as Kubernetes API<br/>6443/TCP HTTPS
+    participant Adapter as Adapter container<br/>(LightEval / Inspect)<br/>no listener
+    participant Sidecar as eval-hub sidecar<br/>localhost:8080 HTTP
+    participant Model as Model endpoint<br/>KServe / vLLM
+    participant Judge as Judge endpoint<br/>api.openai.com 443/TCP
+    participant HF as Hugging Face / GitHub<br/>443/TCP HTTPS
+    participant MLflow as MLflow<br/>HTTP(S) per config
+    participant OCI as OCI registry<br/>443/TCP HTTPS
+
+    Note over EH,OCI: Flow 1 - Benchmark job execution
+    EH->>K8s: Create Job (adapter image, JobSpec ConfigMap at /meta,<br/>projected model-auth secret, sidecar)<br/>TLS, eval-hub SA token
+    K8s-->>Adapter: Start Job pod (python main.py)
+    Adapter->>Adapter: Read /meta/job.json, /var/run/secrets/model/*,<br/>/test_data (volume mounts)
+    Adapter->>Sidecar: report_status INITIALIZING ... RUNNING_EVALUATION<br/>HTTP, SDK-managed auth
+    Sidecar->>EH: Relay JobPhase status
+    loop For each benchmark sample
+        Adapter->>Sidecar: POST /v1/chat/completions or /v1/completions (echo+logprobs)<br/>HTTP loopback, Bearer reference token or "dummy"
+        Sidecar->>Model: Forward with real API key or SA token<br/>HTTP/HTTPS per endpoint
+        Model-->>Sidecar: Completion / logprobs
+        Sidecar-->>Adapter: Response
+    end
+    opt Online mode (HF_HUB_OFFLINE unset)
+        Adapter->>HF: Download datasets / tokenizers / task assets<br/>TLS, optional HF_TOKEN
+        HF-->>Adapter: Data
+    end
+    Adapter->>Sidecar: report_status POST_PROCESSING
+    opt MLflow configured
+        Adapter->>MLflow: callbacks.mlflow.save (metrics, params, artifacts)<br/>SDK-managed credentials
+    end
+    opt config.exports.oci set
+        Adapter->>OCI: create_oci_artifact (result files / Inspect logs)<br/>TLS, SDK-managed credentials
+    end
+    Adapter->>Sidecar: report_results (COMPLETED)
+    Sidecar->>EH: Relay results (409 on duplicate COMPLETED)
+    Adapter->>Adapter: exit 0 (success) / exit 1 (failure)
+
+    Note over Adapter,Judge: Flow 2 - LLM-as-judge scoring (Inspect Petri / HLE / StrongREJECT)
+    Adapter->>Model: Auditor role request<br/>HTTP/HTTPS, Bearer
+    Adapter->>Model: Target role request<br/>HTTP/HTTPS, Bearer
+    Adapter->>Judge: Judge / grader request (OPENAI_JUDGE_BASE_URL)<br/>HTTPS TLS, Bearer OPENAI_JUDGE_API_KEY
+    Judge-->>Adapter: Scores

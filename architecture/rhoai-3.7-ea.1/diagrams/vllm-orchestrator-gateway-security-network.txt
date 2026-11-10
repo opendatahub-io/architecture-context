@@ -1,0 +1,108 @@
+vllm-orchestrator-gateway - Security Network Diagram (RHOAI 3.7-ea.1)
+Source: architecture/rhoai-3.7-ea.1/vllm-orchestrator-gateway.md
+Release status: RHOAI Konflux image OFFBOARDED (RHOAIENG-97573); ODH image only.
+                No RHOAI 3.7-ea.1 operator in the analyzed checkouts deploys it.
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│  CLIENT ZONE (trust level depends on deployer)                          │
+│                                                                         │
+│  [OpenAI-compatible Client]                                             │
+│         │                                                               │
+│         │ Port: proxy-defined (typically 443/TCP)                       │
+│         │ Protocol: HTTPS                                               │
+│         │ Encryption: TLS terminated at fronting proxy                  │
+│         │ Auth: Bearer token (validated by proxy, if any)               │
+│         ▼                                                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│  FRONTING PROXY (deployer-provided; NOT part of this repo)              │
+│                                                                         │
+│  [Auth Proxy]                                                           │
+│  - Inbound TLS termination and authentication                           │
+│  - Historically supplied by TrustyAI GuardrailsOrchestrator controller  │
+│         │                                                               │
+│         │ Port: 8090/TCP (HTTP_PORT)                                    │
+│         │ Protocol: HTTP (JSON, or SSE when "stream": true)             │
+│         │ Encryption: NONE (plain HTTP listener)                        │
+│         │ Auth: NONE in-process; Authorization header forwarded         │
+│         ▼                                                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│  GATEWAY POD (single-tenant; historically sidecar next to orchestrator) │
+│                                                                         │
+│  [vllm-orchestrator-gateway]                                            │
+│  - Bind: HOST=0.0.0.0, HTTP_PORT=8090                                   │
+│  - Endpoints: POST /{route}/v1/chat/completions (one per route)         │
+│      baked: /pii/v1/chat/completions (regex-language: email, ssn)       │
+│             /passthrough/v1/chat/completions (no detectors)             │
+│  - No health / readiness / metrics endpoints                            │
+│  - Route detectors overwrite client-supplied "detectors" key            │
+│  - Kubernetes API: not used; no RBAC; no CRDs; stateless                │
+│  - Image (RHOAI, offboarded): odh-trustyai-vllm-orchestrator-gateway-   │
+│    rhel9 on digest-pinned ubi9/ubi-minimal-pqc                          │
+│         │                                                               │
+│         │ Port: configurable (baked 8085/TCP; struct default 8032/TCP)  │
+│         │ Path: /api/v2/chat/completions-detection                      │
+│         │ Protocol: HTTP, or HTTPS ONLY if tls.crt AND tls.key exist    │
+│         │ Encryption: TLS via native-tls/OpenSSL, system defaults       │
+│         │   (no min version / cipher pinning; RHEL crypto-policy)       │
+│         │ Auth: optional mTLS client cert (PEM -> in-memory PKCS#12,    │
+│         │   empty password) + forwarded Authorization + x-forwarded-*   │
+│         │ Hostname verification: DISABLED when host == "localhost"      │
+│         │ Fallback: silent plaintext HTTP if certs absent (warn log)    │
+│         ▼                                                               │
+│  [FMS Guardrails Orchestrator]                                          │
+│  - Baked config: localhost:8085                                         │
+│  - Enforces TLS listener / client cert (if configured)                  │
+│         │                                                               │
+│         │ Port / Protocol / Encryption / Auth: orchestrator-defined     │
+│         ▼                                                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│  ORCHESTRATOR BACKENDS (outside gateway control)                        │
+│                                                                         │
+│  [Detector servers] - regex detector, guardrails-detectors              │
+│     detectors[].server must match orchestrator detector names           │
+│  [Generation model] - vLLM / OpenAI-compatible model server             │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- None. The gateway does not call the Kubernetes API and ships no
+  ClusterRole, Role, RoleBinding or ServiceAccount.
+
+Authentication & Authorization:
+- /{route}/v1/chat/completions (POST): no in-gateway auth; Authorization
+  header passed through. Enforcement: fronting proxy and/or orchestrator.
+  Route-level detector policy fixed by config; clients cannot override.
+  Routes are NOT tied to caller identity - any caller reaching 8090 can
+  use every route (including /passthrough with no detectors).
+- Gateway -> orchestrator (POST): optional mTLS client cert + forwarded
+  bearer. Enforcement: orchestrator TLS listener.
+
+Service Mesh / Network Policy:
+- None defined in repo. NetworkPolicy, Service, and exposure are left to
+  the deployer.
+
+Secrets / Mounted Credentials:
+- /etc/tls/private/tls.{crt,key} (kubernetes.io/tls, expected) - mTLS
+  client identity to orchestrator; provisioned by deploying operator /
+  OpenShift service-ca (inferred); read once at startup, rotation only on
+  restart.
+- /etc/tls/ca/service-ca.crt (CA bundle, expected) - extra trust root;
+  OpenShift service-ca injection (inferred); read once at startup.
+  NOTE: CA alone does NOT enable HTTPS (scheme stays http).
+
+Cryptography / FIPS:
+- TLS library: native-tls (OpenSSL backend) + openssl crate; no rustls/ring.
+- Min/Max TLS version, ciphers: unset (system / crypto-policy defaults).
+- Linking: dynamic against system OpenSSL (openssl-libs in runtime image).
+- Server-side TLS: none.
+- JWT: none; bearer tokens forwarded opaquely.
+
+Key Security Risks:
+1. Tracing hard-coded to DEBUG: full Authorization bearer tokens, request
+   payloads (prompts) and orchestrator responses (completions) are logged.
+2. Plain HTTP listener with no in-process auth; relies on external proxy.
+3. Silent plaintext fallback to orchestrator when cert files are missing.
+4. Hostname verification disabled for "localhost" orchestrator host.
+5. Streaming output guardrails are best-effort (pre-detection chunks
+   already delivered).
+6. Panics on unexpected orchestrator JSON (request task abort); no rate
+   limiting or request size limits.

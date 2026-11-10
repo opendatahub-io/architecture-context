@@ -1,0 +1,143 @@
+DISTRIBUTED-WORKLOADS — SECURITY NETWORK DIAGRAM (RHOAI 3.7.0-ea.1)
+Source: architecture/rhoai-3.7-ea.1/distributed-workloads.md
+Repo commit: 1b79f85e5b48451abf5a245ca78b7fc37a66047a (branch rhoai-3.7-ea.1)
+
+SCOPE NOTE: This repo is a container-image build repo plus an E2E test suite.
+It deploys NO platform Service, Route, operator or controller. The network paths
+below are the runtime behaviour of the images it ships (universal training images)
+inside workloads owned by other components (notebooks, trainer), plus the E2E
+test client. Example/workshop manifests are listed separately as DEMO ONLY.
+
+══════════════════════════════════════════════════════════════════════════════
+ PATH A: WORKBENCH MODE (universal image started with NOTEBOOK_ARGS)
+══════════════════════════════════════════════════════════════════════════════
+┌──────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                    │
+│  [Browser]                                                               │
+│      │ Port: 443/TCP   Protocol: HTTPS   Encryption: TLS                 │
+│      │ Auth: OpenShift OAuth / platform auth                             │
+│      ▼                                                                   │
+├──────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (owned by notebooks / platform gateway — not this repo)         │
+│  [Workbench Gateway / Route + auth proxy]                                │
+│  - TLS terminated here                                                   │
+│      │ Port: 8888/TCP  Protocol: HTTP   Encryption: NONE (plaintext)     │
+│      │ Auth: upstream-authenticated (Jupyter --ServerApp.token='')       │
+│      ▼                                                                   │
+├──────────────────────────────────────────────────────────────────────────┤
+│  USER NAMESPACE                                                          │
+│  [Jupyter Server — odh-th-torch-{cpu,cuda,rocm}-py312-rhel9]             │
+│  - Entrypoint: entrypoint-universal.sh → start-notebook.sh ${NOTEBOOK_ARGS}│
+│      │ Port: 6443/TCP  Protocol: HTTPS  Encryption: TLS 1.2+             │
+│      │ Auth: Bearer token (Kubeflow SDK)                                 │
+│      ▼                                                                   │
+│  [Kubernetes API]                                                        │
+└──────────────────────────────────────────────────────────────────────────┘
+
+══════════════════════════════════════════════════════════════════════════════
+ PATH B: DISTRIBUTED MPI TRAINJOB (CUDA and CPU images only; ROCm has no MPI/SSH)
+══════════════════════════════════════════════════════════════════════════════
+┌──────────────────────────────────────────────────────────────────────────┐
+│  CLUSTER CONTROL PLANE                                                   │
+│  [User / Kubeflow SDK] ──6443/TCP HTTPS TLS1.2+ Bearer──▶ [Kubernetes API]│
+│  [Trainer controller] creates launcher + worker pods (ServiceAccount)    │
+│      │ (container command overridden; entrypoint not executed)           │
+│      ▼                                                                   │
+├──────────────────────────────────────────────────────────────────────────┤
+│  USER NAMESPACE (no NetworkPolicy shipped by this repo)                  │
+│  [Launcher pod]                                                          │
+│  - mpirun/mpiexec → openshift-uid-exec.sh                                │
+│    * writes arbitrary UID into /etc/passwd (chmod g=u /etc/passwd)       │
+│    * waits ≤60s for hostfile names (RHOAI_TRAINER_ENABLE_MPI_HOST_WAIT)  │
+│    * caps ulimit -n at MPIRUN_MAX_NOFILE (65536)                         │
+│      │                                                                   │
+│      ├─▶ [Cluster DNS]  Port: 53/UDP  Protocol: DNS  Encryption: None    │
+│      │                                                                   │
+│      │ Port: 2222/TCP  Protocol: SSH  Encryption: SSH (RSA host key)     │
+│      │ Auth: Public key (per-job key mounted by Trainer MPI runtime)     │
+│      ▼                                                                   │
+│  [Worker pods — user-level sshd, mpiuser-sshd.conf]                      │
+│  - Port 2222, PasswordAuthentication no, PermitRootLogin no              │
+│  - No TCP/agent/X11 forwarding, no tunnel, StrictModes no                │
+│      │                                                                   │
+│      │ Port: 443/TCP  Protocol: HTTPS  Encryption: TLS                   │
+│      │ Auth: AWS access key/secret  |  HF_TOKEN (optional)               │
+│      ▼                                                                   │
+├──────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                       │
+│  [S3-compatible storage (AWS_DEFAULT_ENDPOINT)]  dataset/model staging   │
+│  [Hugging Face Hub]  model/dataset download (fallback when S3 unset)     │
+└──────────────────────────────────────────────────────────────────────────┘
+
+══════════════════════════════════════════════════════════════════════════════
+ PATH C: E2E TEST EXECUTION (tests image, CI only)
+══════════════════════════════════════════════════════════════════════════════
+┌──────────────────────────────────────────────────────────────────────────┐
+│  TEST RUNNER                                                             │
+│  [tests image: gotestsum + oc 4.18, mounted kubeconfig]                  │
+│      │                                                                   │
+│      ├─▶ [Kubernetes API]        6443/TCP HTTPS TLS 1.2+   kubeconfig    │
+│      ├─▶ [Ray dashboard Route]   443/TCP  HTTPS TLS VERIFY OFF  Bearer   │
+│      │       (InsecureSkipVerify: ray_cluster_client_helper.go:34)       │
+│      ├─▶ [Prometheus/Thanos]     443/TCP  HTTPS TLS custom RootCAs Bearer│
+│      ├─▶ [S3 endpoint]           443/TCP  HTTPS TLS VERIFY OFF  AWS key  │
+│      │       (InsecureSkipVerify: cloud_storage_provider.go:120-121)     │
+│      ├─▶ [Trainer metrics]       HTTPS TLS VERIFY OFF, MinVersion TLS12  │
+│      │       (trainer_metrics_test.go:47)                                │
+│      └─▶ [PyPI index]            443/TCP  HTTPS TLS   none               │
+│              (default pypi.python.org; runtime pip in test workloads)    │
+└──────────────────────────────────────────────────────────────────────────┘
+
+══════════════════════════════════════════════════════════════════════════════
+ DEMO ONLY — user-applied examples/workshops (NOT installed by RHOAI operator)
+══════════════════════════════════════════════════════════════════════════════
+- minio-service / minio (ClusterIP): 9000/TCP, 9001/TCP, 9090/TCP HTTP, no TLS,
+  hardcoded minio/minio credential (examples/hpo-raytune/resources/setup-minio.yaml)
+- minio-api, minio-ui, minio, minio-console Routes: 443/TCP HTTPS, edge TLS, External
+- nfs-server (ClusterIP): 2049/TCP, 111/UDP NFS/RPC, no auth, SA bound to
+  anyuid + privileged SCC (workshops/kueue/nfs/nfs_deployment.yaml)
+- stable-diffusion ServingRuntime (pytorch/torchserve-kfs:0.11.0-gpu)
+
+──────────────────────────────────────────────────────────────────────────────
+RBAC Summary:
+- ClusterRoles defined by this repo: NONE
+- E2E suite creates namespaced Roles/RoleBindings per test (tests/common/support/rbac.go)
+- Example/workshop RoleBindings only:
+  - edit (ns: distributed) → ClusterRole edit → SA stable-diffusion-nb
+  - nfs-server-sa-anyuid (ns: nfs) → system:openshift:scc:anyuid → SA nfs-server-sa
+  - nfs-server-sa-privileged (ns: nfs) → system:openshift:scc:privileged → SA nfs-server-sa
+
+Authentication & Authorization:
+- Jupyter (workbench mode): in-pod token disabled; enforced by workbench
+  gateway/auth proxy (notebooks component); namespace user access
+- sshd 2222 (MPI): public key only; enforced by sshd (mpiuser-sshd.conf)
+
+Service Mesh Configuration:
+- None defined. No PeerAuthentication, AuthorizationPolicy or NetworkPolicy shipped.
+
+Secrets:
+- MPI SSH key (/home/mpiuser/.ssh/id_rsa, authorized_keys) - mounted, provisioned
+  per job by Kubeflow Trainer MPI runtime, no rotation (per-job)
+- Test env credentials (AWS_*, HF_TOKEN, NOTEBOOK_USER_TOKEN) - env vars, CI operator,
+  no rotation
+- minio / minio-secret (Opaque, EXAMPLE ONLY) - hardcoded minio/minio root creds
+
+Crypto / FIPS Posture:
+- Images are "FIPS-friendly by construction", not FIPS-validated
+- OpenSSL inherited from RHEL9 workbench base
+- TensorBoard Rust tensorboard_data_server removed (non-FIPS bundled crypto)
+- Native wheels not verified against FIPS OpenSSL: grpcio (BoringSSL), blake3,
+  cryptography, pyOpenSSL, sigstore
+- Test code uses InsecureSkipVerify for Ray dashboard, S3, Trainer metrics
+
+Build Hermeticity:
+- Universal images: Hermeto/Cachi2 prefetch, hermetic: "true", --no-index
+- RPM lock: CUDA + CPU (openssh-server only); ROCm has none
+- requirements.txt fully pinned but WITHOUT --hash
+- Ray images: non-hermetic, UBI9 python base, not AIPCC
+- tests image downloads oc 4.18 over HTTPS without checksum
+
+Notable Risks:
+- /etc/passwd group-writable in CUDA/CPU images (needed for arbitrary UID)
+- MPI sshd on 2222 relies on keys only; no NetworkPolicy
+- Lockfiles compiled against AIPCC rhoai/3.6 index on 3.7 branch

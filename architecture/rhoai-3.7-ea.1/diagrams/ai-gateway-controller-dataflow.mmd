@@ -1,0 +1,66 @@
+sequenceDiagram
+    autonumber
+    participant MaaS as maas-controller
+    participant K8s as Kubernetes API<br/>6443/TCP HTTPS TLS 1.2+
+    participant AGC as ai-gateway-controller<br/>SA: ai-gateway-controller
+    participant Client as External Client / Browser
+    participant GW as Gateway Envoy<br/>443/TCP HTTPS (openshift-ingress)
+    participant Pre as payload-pre-processing<br/>9004/TCP gRPC TLS
+    participant Auth as Kuadrant / Authorino
+    participant EMP as payload-processing-external-model<br/>9004/TCP gRPC TLS
+    participant Nemo as NeMo Guardrails<br/>8000 HTTP / 8443 HTTPS
+    participant Prov as External LLM Provider<br/>443/TCP HTTPS
+    participant Proxy as maas-consumer-portal-auth-proxy<br/>4180/TCP HTTPS TLS 1.2+
+    participant OIDC as OIDC Issuer<br/>443/TCP HTTPS
+    participant Portal as maas-portal Service<br/>8443/TCP HTTPS
+    participant Prom as Prometheus
+
+    rect rgb(230, 240, 255)
+    Note over MaaS,AGC: Flow 1 - Tenant dataplane install (control plane)
+    MaaS->>K8s: Write MaasTenantConfig/AITenant<br/>payload-processing-status=cleanup-complete<br/>SA token
+    K8s-->>AGC: Watch event (HTTPS, SA token)
+    AGC->>AGC: krusty render /config/manifests<br/>post-render + per-tenant rename
+    AGC->>K8s: SSA Deployments, Services, ConfigMaps,<br/>EnvoyFilters, DestinationRules, NetworkPolicies,<br/>HPAs, ServiceMonitors, then CAS status=steady
+    end
+
+    rect rgb(230, 255, 230)
+    Note over Client,Prov: Flow 2 - ExternalModel inference (dataplane configured by controller)
+    Client->>GW: POST inference request<br/>HTTPS TLS, MaaS API key / token
+    GW->>Pre: ExtProc gRPC TLS (SAN-verified)<br/>extract body model → X-Gateway-Model-Name
+    Pre-->>GW: Headers mutated
+    GW->>Auth: wasm auth (gRPC, platform mTLS/TLS)<br/>MaaS credential
+    Auth-->>GW: Allow
+    GW->>EMP: ExtProc gRPC TLS<br/>intelligent_route + credential_inject
+    opt AIGuardrail attached
+        EMP->>Nemo: Guardrail check<br/>HTTP 8000 (no auth) or HTTPS 8443 (SA token)
+        Nemo-->>EMP: Verdict
+    end
+    EMP-->>GW: Route + injected provider credential<br/>(caller credentials stripped)
+    GW->>Prov: HTTPS 443, TLS SIMPLE, SNI=endpoint<br/>API key / SigV4 / OAuth2
+    Prov-->>GW: Completion
+    GW-->>Client: Response
+    end
+
+    rect rgb(245, 230, 255)
+    Note over Client,Portal: Flow 3 - Consumer portal OIDC login
+    Client->>GW: GET /maas-portal/ HTTPS 443<br/>session cookie (none on first visit)
+    GW->>Auth: AuthPolicy maas-consumer-portal-session
+    Auth->>Proxy: /oauth2/auth HTTPS 4180 (service-ca)<br/>cookie forwarded
+    Proxy-->>Auth: 401 (no session)
+    GW-->>Client: 302 → /oauth2/start
+    Client->>GW: /oauth2/start (anonymous AuthPolicy)
+    GW->>Proxy: HTTPS re-encrypt :4180 (DestinationRule)
+    Proxy->>OIDC: HTTPS 443 (system + odh-trusted-ca-bundle)<br/>OIDC client credentials
+    OIDC-->>Proxy: Tokens → session cookie
+    Client->>GW: GET /maas-portal/ with session
+    GW->>Portal: HTTPS 8443 TLS SIMPLE via ReferenceGrant<br/>injected authorization, x-maas-identity
+    Portal-->>Client: Portal UI
+    end
+
+    rect rgb(255, 245, 225)
+    Note over Prom,AGC: Flow 4 - Metrics scrape
+    Prom->>AGC: GET /metrics 8443/TCP HTTPS<br/>Bearer SA token
+    AGC->>K8s: TokenReview + SubjectAccessReview
+    K8s-->>AGC: Allowed
+    AGC-->>Prom: Metrics
+    end

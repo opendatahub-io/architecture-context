@@ -1,0 +1,42 @@
+sequenceDiagram
+    participant Client as API Client
+    participant GW as Platform Gateway (batch-route)<br/>443/TCP HTTPS
+    participant API as batch-gateway-apiserver<br/>8000/TCP HTTP/HTTPS
+    participant PG as PostgreSQL<br/>5432/TCP
+    participant S3 as S3 / filesystem<br/>443/TCP HTTPS
+    participant Proc as batch-gateway-processor<br/>StatefulSet
+    participant Redis as Redis/Valkey<br/>6379/TCP
+    participant IGW as llm-d inference gateway / EPP<br/>batch-llm-route
+    participant GC as batch-gateway-gc
+    participant K8s as Kubernetes API<br/>6443/TCP
+
+    Note over Client,PG: Flow 1: File upload and batch submission
+    Client->>GW: POST /v1/files (JSONL), POST /v1/batches<br/>Bearer token (Kubernetes/OIDC)
+    GW->>GW: AuthPolicy validates token, RateLimitPolicy
+    GW->>API: Forward + X-MaaS-Username header<br/>HTTP or TLS 1.2+
+    API->>S3: Store file under t-sha256(tenant)/<br/>SigV4
+    API->>PG: Insert metadata + queue entry<br/>pth:Authorization tag (per sslmode)
+    API-->>GW: File / Batch object
+    GW-->>Client: JSON response
+
+    Note over Proc,IGW: Flow 2: Batch processing (sync dispatch)
+    Proc->>PG: Dequeue job, acquire ownership lease
+    Proc->>S3: Download input file (SigV4)
+    Proc->>Proc: Group by model + system-prompt hash, write plan to local disk
+    loop Each request (global/per-endpoint semaphores, AIMD)
+        Proc->>IGW: POST inference request<br/>Forwarded user bearer, optional TLS/mTLS
+        IGW->>IGW: SubjectAccessReview on inferencepools
+        IGW-->>Proc: Response (429/5xx triggers AIMD backoff)
+        Proc->>PG: Progress / checkpoint
+    end
+    Proc->>S3: Upload output and error files (SigV4)
+    Proc->>PG: Update job status
+
+    Note over Proc,Redis: Flow 3: Async dispatch via llm-d-async
+    Proc->>Redis: Push to request sorted set<br/>(or PostgreSQL SQL transport)
+    Redis-->>Proc: Results from per-replica result queue
+
+    Note over GC,K8s: Flow 4: Garbage collection and orphan recovery
+    GC->>K8s: Watch processor StatefulSet, list pods<br/>ServiceAccount token, TLS 1.2+
+    GC->>PG: Expire items, re-queue orphaned jobs
+    GC->>S3: Delete expired file content (SigV4)

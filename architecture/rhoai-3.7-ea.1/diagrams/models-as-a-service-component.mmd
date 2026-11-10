@@ -1,0 +1,158 @@
+graph TB
+    %% Models-as-a-Service (MaaS) component structure - RHOAI 3.7-ea.1
+
+    RHOAIOp["RHOAI Operator<br/>(DSC modelsAsService)"]
+    Admin[Cluster Admin / Tenant Admin]
+    User["User / Dashboard / maas-ui"]
+    Client["API Client<br/>(Bearer sk-oai-... key)"]
+
+    subgraph MaaS["Models-as-a-Service (models-as-a-service repo)"]
+        direction TB
+
+        subgraph Ctrl["maas-controller (controller-runtime, 1 replica, leader election)"]
+            Reconcilers["Reconcilers<br/>MaaSModelRef / MaaSAuthPolicy / MaaSSubscription<br/>ExternalModel / AITenant / MaasTenantConfig / Config"]
+            TenantRec["TenantReconciler<br/>embedded kustomize render + SSA"]
+            LifecycleRec["LifecycleReconciler<br/>(maas-discovery when enabled)"]
+            SelfDeploy["Self-deployment / Observability<br/>controller"]
+            Webhooks["Validating Webhooks<br/>9443/TCP (5 webhooks, failurePolicy Fail)"]
+            CtrlMetrics["/metrics 8443/TCP<br/>(TokenReview + SAR)"]
+        end
+
+        subgraph Api["maas-api (gin, per tenant, 1 replica)"]
+            PublicAPI["Public REST API<br/>/v1/models, /v1/me, /v1/subscriptions<br/>/v1/api-keys, /v1/tenants, /v1/logs/loki"]
+            InternalAPI["Internal callbacks<br/>/internal/v1/api-keys/validate<br/>/internal/v1/subscriptions/select"]
+            CleanupAPI["Cleanup / revocation<br/>/internal/v1/api-keys/cleanup<br/>/internal/v1/tenants/..."]
+            ApiMetrics["/metrics 9090/TCP"]
+        end
+
+        Discovery["maas-discovery (optional)<br/>GET /v1/tenants 8443/TCP<br/>TokenReview"]
+        CleanupCron["maas-api-cleanup CronJob<br/>(every 15 min)"]
+        RevokeJob["Revocation Jobs<br/>(AITenant deletion)"]
+        Common["maas-common<br/>(shared Go module)"]
+    end
+
+    subgraph CRDs["MaaS CRDs"]
+        MaaSModelRef[MaaSModelRef]
+        MaaSAuthPolicy[MaaSAuthPolicy]
+        MaaSSubscription[MaaSSubscription]
+        AITenant["AITenant<br/>(ai-tenants ns)"]
+        MaasTenantConfig[MaasTenantConfig]
+        TenantDep["Tenant<br/>(deprecated)"]
+        ConfigCR["Config<br/>(cluster-scoped owner anchor)"]
+        ExtModelLegacy["ExternalModel<br/>maas.opendatahub.io (legacy)"]
+        ExtModelNew["ExternalModel / ExternalProvider<br/>inference.opendatahub.io"]
+    end
+
+    subgraph Generated["Generated platform resources"]
+        AuthPolicy["Kuadrant AuthPolicy"]
+        TRLP["Kuadrant TokenRateLimitPolicy<br/>/ RateLimitPolicy"]
+        TelemetryPolicy["Kuadrant TelemetryPolicy"]
+        HTTPRoute["Gateway API HTTPRoutes"]
+        IstioRes["Istio DestinationRule / ServiceEntry<br/>/ EnvoyFilter / Telemetry"]
+        InfObjective["llm-d InferenceObjective"]
+        NetPol["NetworkPolicies"]
+        Obs["OpenTelemetryCollector / Perses dashboards<br/>/ ServiceMonitors / Loki wiring"]
+    end
+
+    subgraph Operands["Operands deployed by maas-controller"]
+        PayloadProc["payload-processing<br/>ext_proc gRPC 9004/TCP<br/>(openshift-ingress)"]
+        TenancyProxy["usage-logs tenancy proxy<br/>(Python)"]
+    end
+
+    Gateway["maas-default-gateway<br/>(openshift-ingress, 443/TCP)"]
+    Authorino["Authorino"]
+    Limitador["Limitador"]
+    Postgres[("PostgreSQL<br/>(maas-db-config)")]
+    KServe["KServe<br/>LLMInferenceService"]
+    ExtProvider["External LLM providers"]
+    K8sAPI["Kubernetes API"]
+
+    %% Lifecycle
+    RHOAIOp -->|deploys| Ctrl
+    Admin -->|creates| CRDs
+
+    %% CRDs watched
+    MaaSModelRef -->|watched by| Reconcilers
+    MaaSAuthPolicy -->|watched by| Reconcilers
+    MaaSSubscription -->|watched by| Reconcilers
+    ExtModelLegacy -->|watched by| Reconcilers
+    AITenant -->|watched by| TenantRec
+    MaasTenantConfig -->|watched by| TenantRec
+    TenantDep -.->|migrated| MaasTenantConfig
+    ConfigCR -->|owner of operands| TenantRec
+    ExtModelLegacy -.->|migrating to| ExtModelNew
+    Webhooks -->|validates| CRDs
+
+    %% Generation
+    Reconcilers -->|generates| AuthPolicy
+    Reconcilers -->|generates| TRLP
+    Reconcilers -->|generates| TelemetryPolicy
+    Reconcilers -->|generates| HTTPRoute
+    Reconcilers -->|generates| IstioRes
+    Reconcilers -->|generates| InfObjective
+    TenantRec -->|SSA deploys| Api
+    TenantRec -->|SSA deploys| PayloadProc
+    TenantRec -->|SSA| NetPol
+    TenantRec -->|SSA| CleanupCron
+    LifecycleRec -->|deploys| Discovery
+    SelfDeploy -->|deploys| Obs
+    SelfDeploy -->|deploys| TenancyProxy
+    Reconcilers -->|creates on AITenant delete| RevokeJob
+    Reconcilers -->|reads| KServe
+    Ctrl -->|watch / CRUD| K8sAPI
+
+    %% Data plane
+    Client -->|HTTPS 443| Gateway
+    User -->|HTTPS 443 /maas-api/v1| Gateway
+    Gateway -->|ext_proc| PayloadProc
+    Gateway -->|auth| Authorino
+    Gateway -->|quota| Limitador
+    Authorino -->|validate key / select subscription| InternalAPI
+    Gateway -->|maas-api-route| PublicAPI
+    Gateway -->|model routes| KServe
+    Gateway -->|ServiceEntry| ExtProvider
+    AuthPolicy -.->|configures| Authorino
+    TRLP -.->|configures| Limitador
+    CleanupCron -->|POST cleanup| CleanupAPI
+    RevokeJob -->|DELETE revoke| CleanupAPI
+    Api -->|SQL| Postgres
+    Api -->|informers / TokenReview / SAR| K8sAPI
+    Discovery -->|TokenReview / reads| K8sAPI
+    Common -.->|used by| Ctrl
+    Common -.->|used by| Api
+    Common -.->|used by| Discovery
+
+    %% Styling
+    style Reconcilers fill:#4a90e2,color:#fff
+    style TenantRec fill:#4a90e2,color:#fff
+    style LifecycleRec fill:#4a90e2,color:#fff
+    style SelfDeploy fill:#4a90e2,color:#fff
+    style Webhooks fill:#4a90e2,color:#fff
+    style CtrlMetrics fill:#4a90e2,color:#fff
+    style PublicAPI fill:#4a90e2,color:#fff
+    style InternalAPI fill:#d0021b,color:#fff
+    style CleanupAPI fill:#4a90e2,color:#fff
+    style ApiMetrics fill:#4a90e2,color:#fff
+    style Discovery fill:#4a90e2,color:#fff
+    style CleanupCron fill:#4a90e2,color:#fff
+    style RevokeJob fill:#4a90e2,color:#fff
+    style Common fill:#4a90e2,color:#fff
+    style MaaSModelRef fill:#f5a623
+    style MaaSAuthPolicy fill:#f5a623
+    style MaaSSubscription fill:#f5a623
+    style AITenant fill:#f5a623
+    style MaasTenantConfig fill:#f5a623
+    style TenantDep fill:#f5a623,stroke-dasharray: 5 5
+    style ConfigCR fill:#f5a623
+    style ExtModelLegacy fill:#f5a623,stroke-dasharray: 5 5
+    style ExtModelNew fill:#f5a623
+    style PayloadProc fill:#7ed321
+    style TenancyProxy fill:#7ed321
+    style KServe fill:#7ed321
+    style RHOAIOp fill:#7ed321
+    style Gateway fill:#e8e8e8
+    style Authorino fill:#e8e8e8
+    style Limitador fill:#e8e8e8
+    style Postgres fill:#e8e8e8
+    style ExtProvider fill:#e8e8e8
+    style K8sAPI fill:#e8e8e8

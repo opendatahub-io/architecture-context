@@ -1,0 +1,192 @@
+kube-rbac-proxy — Security Network Diagram (RHOAI 3.7-ea.1)
+Source: architecture/rhoai-3.7-ea.1/kube-rbac-proxy.md
+Version: v0.21.1, branch rhoai-3.7-ea.1, commit ffceb57
+Image:   quay.io/rhoai/odh-kube-rbac-proxy-rhel9 (FIPS, x86_64/ppc64le/s390x/arm64)
+
+NOTE: kube-rbac-proxy is a sidecar utility. This repo ships NO production
+Deployment, Service, Ingress/HTTPRoute, RBAC or Secret. Ports, namespaces,
+certificates and RBAC are supplied by the consuming RHOAI operator. The
+topology below is the typical sidecar pattern used in RHOAI 3.x.
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                        │
+│                                                                              │
+│  [External User / Client]                                                    │
+│         │                                                                    │
+│         │ Port: 443/TCP                                                      │
+│         │ Protocol: HTTPS                                                    │
+│         │ Encryption: TLS (gateway listener, consumer-defined)               │
+│         │ Auth: Bearer token (OpenShift token or OIDC JWT)                   │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (Gateway API — defined by consuming operator, not this repo)        │
+│                                                                              │
+│  [data-science-gateway / HTTPRoute]                                          │
+│  - Routes HTTPRoute → <workload> Service:8443                                │
+│         │                                                                    │
+│         │ Port: 8443/TCP                                                     │
+│         │ Protocol: HTTPS (h2, http/1.1)                                     │
+│         │ Encryption: TLS 1.2+ (min version / ciphers / curves from flags)   │
+│         │ Auth: Bearer token passed through to the sidecar                   │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  CLUSTER INTERNAL — Workload Pod (namespace: consumer workload namespace)    │
+│                                                                              │
+│  Other in-cluster callers (also → 8443/TCP HTTPS TLS 1.2+):                  │
+│   - In-cluster services: Bearer SA token or x509 client cert                 │
+│   - Prometheus (openshift-monitoring:prometheus-k8s): Bearer SA token,       │
+│     GET /metrics  → IMPLICIT ALLOW via hardcoded authorizer (no SAR)         │
+│         │                                                                    │
+│         ▼                                                                    │
+│  ┌────────────────────────────────────────────────────────────────────────┐  │
+│  │ [kube-rbac-proxy sidecar]                                              │  │
+│  │  - Listener: --secure-listen-address, usually 0.0.0.0:8443/TCP         │  │
+│  │  - TLS: crypto/tls, MinVersion --tls-min-version (default TLS 1.2),    │  │
+│  │         ciphers/curves from flags (Go defaults if unset), ALPN h2,     │  │
+│  │         ClientAuth=RequestClientCert; cert hot-reloaded from files     │  │
+│  │         (self-signed in-memory fallback if no cert — deprecated)       │  │
+│  │  - Runs as UID 65534; GOEXPERIMENT=strictfipsruntime, CGO, OpenSSL     │  │
+│  │  - Filter chain (in order):                                            │  │
+│  │      1. WithAllowPaths     → 404 if not on --allow-paths               │  │
+│  │      2. --ignore-paths     → AUTH BYPASS straight to upstream          │  │
+│  │      3. withRequestTimeouts (auth 30s, upstream 30s to headers)        │  │
+│  │      4. WithAuthentication → TokenReview | OIDC JWT | x509 (CN=user)   │  │
+│  │                              anonymous disabled; 401 on failure        │  │
+│  │      5. WithAuthorization  → union: hardcoded → static → SAR           │  │
+│  │                              every attribute set must allow; 403       │  │
+│  │      6. WithAuthHeaders    → x-remote-user / x-remote-groups           │  │
+│  │      7. SingleHostReverseProxy → --upstream                            │  │
+│  │  - Limits: ReadHeaderTimeout 10s, IdleTimeout 60s,                     │  │
+│  │            HTTP/2 100 streams, 256 KiB frames                          │  │
+│  │  - Optional: /healthz on --proxy-endpoints-port (TLS, NO AUTH)         │  │
+│  │  - Optional: --insecure-listen-address (HTTP/h2c, NO TLS, deprecated)  │  │
+│  └────────────────────────────────────────────────────────────────────────┘  │
+│         │                                                                    │
+│         │ Port: 8080/TCP (localhost, typical)                                │
+│         │ Protocol: HTTP (or HTTPS, or h2c with --upstream-force-h2c)        │
+│         │ Encryption: None by default; TLS 1.2+ with --upstream-ca-file,     │
+│         │             mTLS with --upstream-client-cert/key-file;             │
+│         │             verification never disabled                           │
+│         │ Auth: Optional identity headers (x-remote-user/x-remote-groups);   │
+│         │       optional mTLS client cert                                    │
+│         ▼                                                                    │
+│  [Upstream Application Container]                                            │
+│  - Must bind to localhost, otherwise the proxy can be bypassed in-cluster    │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  KUBERNETES CONTROL PLANE                                                    │
+│                                                                              │
+│  kube-rbac-proxy ──► [kube-apiserver]                                        │
+│         Port: 6443/TCP (via kubernetes.default.svc:443)                      │
+│         Protocol: HTTPS (REST)                                               │
+│         Encryption: TLS 1.2+ (client-go)                                     │
+│         Auth: ServiceAccount token (projected) or kubeconfig                 │
+│         Calls: POST TokenReview (cache 2 min)                                │
+│                POST SubjectAccessReview per attribute set                    │
+│                (cache: allow 5 min, deny 30 s)                               │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES (optional)                                                │
+│                                                                              │
+│  kube-rbac-proxy ──► [OIDC Issuer]  (only when --oidc-issuer is set)         │
+│         Port: 443/TCP                                                        │
+│         Protocol: HTTPS (discovery + JWKS; issuer must be https)             │
+│         Encryption: TLS, system trust store or --oidc-ca-file                │
+│         Auth: None                                                           │
+│         JWT: signature verified locally, --oidc-sign-alg (default RS256)     │
+│                                                                              │
+│  kube-rbac-proxy ──► [stdout / log collection]                               │
+│         OCSF 1.9.0 API Activity events, AI Operation profile                 │
+│         (only with --audit-log-profile=metadata; async bounded queue,        │
+│          "gap" events on drop)                                               │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+Data Flows:
+  Flow 1 — Authenticated request (TokenReview + SAR)
+    1. Client          → kube-rbac-proxy  8443/TCP HTTPS TLS1.2+  Bearer / client cert
+    2. kube-rbac-proxy → kube-apiserver   6443/TCP HTTPS TLS1.2+  SA token (TokenReview)
+    3. kube-rbac-proxy → kube-apiserver   6443/TCP HTTPS TLS1.2+  SA token (SAR, per attribute set)
+    4. kube-rbac-proxy → upstream         8080/TCP HTTP localhost optional identity headers
+    5. kube-rbac-proxy → stdout           OCSF JSON (optional)
+  Flow 2 — Prometheus metrics scrape
+    1. Prometheus      → kube-rbac-proxy  8443/TCP HTTPS TLS1.2+  Bearer SA token
+    2. kube-rbac-proxy → kube-apiserver   6443/TCP HTTPS TLS1.2+  SA token (TokenReview)
+    3. kube-rbac-proxy → upstream /metrics 8080/TCP HTTP          hardcoded allow, NO SAR
+  Flow 3 — OIDC-authenticated request
+    1. kube-rbac-proxy → OIDC issuer      443/TCP HTTPS           none (discovery/JWKS)
+    2. Client          → kube-rbac-proxy  8443/TCP HTTPS TLS1.2+  OIDC JWT bearer
+    3. kube-rbac-proxy → kube-apiserver   6443/TCP HTTPS TLS1.2+  SA token (SAR)
+    4. kube-rbac-proxy → upstream         8080/TCP HTTP           identity headers (optional)
+
+Unauthenticated / Reduced-Auth Surfaces:
+  - --ignore-paths matches: authentication and authorization bypassed by design
+  - /healthz on --proxy-endpoints-port: TLS only, no auth
+  - GET /metrics for openshift-monitoring:prometheus-k8s: always allowed by the
+    hardcoded authorizer, regardless of cluster RBAC (TODO in source to remove)
+  - --insecure-listen-address (deprecated): plaintext HTTP/h2c, same auth chain
+    but no transport encryption (examples/oidc still uses it)
+  - Upstream hop is plaintext by default; identity headers are only safe on a
+    localhost hop
+
+Authorization Model:
+  Union authorizer = hardcodedMetricsAuthorizer → staticAuthorizer → sarAuthorizer
+  - Format1: resourceAttributes + rewrites (query param / header templating)
+  - Format2: endpoints[].mappings[].resources[] with named path captures,
+             per-method mappings; unmapped method → 403 (deny by default)
+  - Templates use Go text/template, e.g.
+        namespace: '{{ index .PathParams "tenant" }}'
+  - Risk: a template resolving to an empty namespace makes the SAR
+          cluster-wide; caller-controlled header/query/path values feed SARs
+  - Revocation latency: up to 5 min (SAR allow cache), 2 min (TokenReview)
+
+RBAC Summary (no production RBAC in repo; from test/ and examples/):
+  Proxy ServiceAccount (required, ≈ system:auth-delegator):
+  - ClusterRole: kube-rbac-proxy / kube-rbac-proxy-verb-override /
+                 named-captures-kube-rbac-proxy
+    - API Groups: authentication.k8s.io   Resources: tokenreviews          Verbs: create
+    - API Groups: authorization.k8s.io    Resources: subjectaccessreviews  Verbs: create
+  Client-side roles (examples of what callers need, checked via SAR):
+  - ClusterRole metrics                              nonResourceURL /metrics     get
+  - ClusterRole kube-rbac-proxy-client               services/proxy              get
+  - Role namespace-metrics                           namespace/metrics           get
+  - Role named-job-reader (ns tenant-a)              batch.example.io/jobs       get
+  - Role kube-rbac-proxy-verb-override-client        pods                        list
+  - cluster-reader / cluster-writer (minikube fix example only)  * / *   get,list,watch / *
+  Bindings:
+  - kube-rbac-proxy (default)                    → SA kube-rbac-proxy
+  - kube-rbac-proxy-verb-override (default)      → SA kube-rbac-proxy-verb-override
+  - named-captures-kube-rbac-proxy (named-captures) → SA kube-rbac-proxy
+  - kube-rbac-proxy-client (default)             → SA default
+  - namespace-metrics (default)                  → SA default
+  - named-job-reader (tenant-a)                  → SA job-reader
+  - kube-rbac-proxy-verb-override-client (monitoring) → SA krp-curl-verb-override
+  - metrics (default)                            → User admin
+
+Service Mesh Configuration:
+  - None. kube-rbac-proxy does not configure PeerAuthentication or
+    AuthorizationPolicy; it performs its own TLS termination and authz.
+  - Network isolation relies on consumer NetworkPolicies and on the upstream
+    binding only to localhost.
+
+Secrets (all consumer-defined and mounted as files; none in this repo):
+  - Serving cert (kubernetes.io/tls) — --tls-cert-file/--tls-private-key-file,
+    usually OpenShift service-ca; hot-reloaded (pkg/tls/reloader.go)
+  - Client CA / upstream CA / upstream client cert (Opaque or ConfigMap) —
+    client and OIDC CA reloaded dynamically; upstream CA read once at start
+  - ServiceAccount token (projected) — Kubernetes API calls; auto-rotated
+  - Token leakage: TokenReview spec.token masked in klog (SanitizingFilter)
+
+Crypto / FIPS:
+  - Build: GOEXPERIMENT=strictfipsruntime, -tags=strictfipsruntime, CGO_ENABLED=1
+           (Dockerfile.konflux, Dockerfile.redhat)
+  - Runtime base: ubi9/ubi-minimal-pqc (OpenSSL with PQC), digest-pinned
+  - No MD5/SHA1/RC4/DES, math/rand or InsecureSkipVerify in non-test code
+  - Config risk: no --tls-cipher-suites → Go defaults; relies on injecting
+    operator to project the OpenShift APIServer TLS security profile
+  - Build hermeticity: Konflux hermetic, gomod prefetch (Hermeto); no RPM lock
+
+Multi-Tenancy:
+  - Tenant boundary: per namespace, from static or templated SAR attributes
+  - One stateless sidecar per workload pod; single upstream
+  - Gaps: config correctness, 5 min revocation delay, hardcoded Prometheus
+    grant, --ignore-paths bypass, upstream bound to pod IP bypasses proxy

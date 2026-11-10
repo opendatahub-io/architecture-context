@@ -1,0 +1,149 @@
+ARGO WORKFLOWS (RHOAI 3.7-ea.1) - SECURITY NETWORK DIAGRAM
+Source: architecture/rhoai-3.7-ea.1/argo-workflows.md
+Shipped images: odh-data-science-pipelines-argo-workflowcontroller-rhel9,
+                odh-data-science-pipelines-argo-argoexec-rhel9
+Deployed by:    Data Science Pipelines Operator (DSPO), one controller per DSPA namespace
+No Routes / Ingress / Gateway resources are defined (ingress confirmed empty).
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  MONITORING NAMESPACES (Trusted platform)                                    │
+│  openshift-monitoring / openshift-user-workload-monitoring /                 │
+│  redhat-ods-monitoring                                                       │
+│                                                                              │
+│  [Prometheus]                                                                │
+│         │                                                                    │
+│         │ Port: 9090/TCP                                                     │
+│         │ Protocol: HTTPS                                                    │
+│         │ Encryption: TLS 1.2+ (TLS_MIN_VERSION), self-signed ECDSA P-256    │
+│         │ Auth: None (access restricted by DSPO NetworkPolicy)               │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  DSPA NAMESPACE (Tenant boundary = Data Science Project namespace)           │
+│                                                                              │
+│  [workflow-controller]  (Deployment rendered by DSPO)                        │
+│  - Image: quay.io/rhoai/odh-data-science-pipelines-argo-workflowcontroller-  │
+│           rhel9, USER 8737                                                   │
+│  - Args: --namespaced --configmap ds-pipeline-workflow-controller-<dspa>     │
+│          --executor-image <argoexec>                                         │
+│  - Service: ds-pipeline-workflow-controller-metrics-<dspa> ClusterIP 9090    │
+│  - Listeners:                                                                │
+│      9090/TCP  HTTPS  /metrics        TLS self-signed   Auth: none           │
+│      6060/TCP  HTTP   /healthz        plaintext         Auth: none           │
+│      6060/TCP  HTTP   /debug/pprof/*  only if ARGO_PPROF=true, Auth: none    │
+│  - Leader election: coordination.k8s.io Lease                                │
+│         │                                                                    │
+│         │ Port: 6443/TCP   Protocol: HTTPS / WSS (watch)                     │
+│         │ Encryption: TLS 1.2+                                               │
+│         │ Auth: ServiceAccount token (namespace Role from DSPO)              │
+│         ▼                                                                    │
+│  ┌────────────────────────────────────────────────────────────────────────┐  │
+│  │ KUBERNETES API SERVER (control plane)                                  │  │
+│  │ 6443/TCP HTTPS TLS 1.2+                                                │  │
+│  │ Callers: workflow-controller, argoexec (pod SA), KFP API server        │  │
+│  └────────────────────────────────────────────────────────────────────────┘  │
+│         │                                                                    │
+│         │ controller creates step pods, agent pods, PDBs, ConfigMaps,        │
+│         │ WorkflowTaskSets, WorkflowArtifactGCTasks                          │
+│         ▼                                                                    │
+│  [Workflow step pod]  (one per step)                                         │
+│  - Containers: argoexec init -> main (user code) -> argoexec wait            │
+│  - Image: quay.io/rhoai/odh-data-science-pipelines-argo-argoexec-rhel9,      │
+│           USER 2000                                                          │
+│  - ServiceAccount: workflow-specified (DSPO default pipeline-runner-<dspa>)  │
+│  - Listening ports: none (outbound only)                                     │
+│  - Writes WorkflowTaskResult via kube API (6443/TCP, HTTPS, pod SA)          │
+│                                                                              │
+│  [Agent pod]  (HTTP / plugin templates)                                      │
+│  - Reads WorkflowTaskSet, patches status via kube API (6443/TCP, pod SA)     │
+│  - Optional CA bundle: secret argo-workflows-agent-ca-certificates           │
+│         │                                                                    │
+│         │ (egress from step / agent pods is NOT restricted by this repo)     │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES (Untrusted / tenant-configured)                           │
+│                                                                              │
+│  [Object storage: S3/MinIO, GCS, Azure Blob, Alibaba OSS]                    │
+│  - Port: 443/TCP (or custom)  Protocol: HTTPS (HTTP if `insecure` set)       │
+│  - Encryption: TLS 1.2+                                                      │
+│  - Auth: access keys from Secret / IRSA / workload identity                  │
+│  - Callers: argoexec init/wait (artifacts, logs), controller (artifact GC)   │
+│                                                                              │
+│  [HDFS]                                                                      │
+│  - Port: varies  Auth: Kerberos (gokrb5)                                     │
+│                                                                              │
+│  [Git remotes]                                                               │
+│  - Port: 443/TCP HTTPS or 22/TCP SSH                                         │
+│  - Auth: Secret-referenced credentials; host keys /etc/ssh/ssh_known_hosts   │
+│                                                                              │
+│  [User HTTP endpoints]  (HTTP templates via argoexec agent)                  │
+│  - Port: any  Protocol: HTTP / HTTPS                                         │
+│  - Encryption: optional. `insecureSkipVerify: true` on a template disables   │
+│    TLS verification (workflow/executor/agent.go:301-310)                     │
+│  - Auth: template-defined headers                                            │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  NOT SHIPPED IN RHOAI (present in source, no Konflux build for argocli)      │
+│                                                                              │
+│  [argo-server]  2746/TCP HTTPS + gRPC (cmux), TLS 1.2+                       │
+│  - Auth: --auth-mode client (Bearer kube token) / server / sso (OIDC)        │
+│  - 9 gRPC services + grpc-gateway REST /api/, artifact download, UI          │
+│  - SSO cookies: JWE RSA-OAEP-256 + A256GCM (secret `sso`)                    │
+│  - Webhook intake: secret argo-workflows-webhook-clients                     │
+│  [argo CLI], [SQL archive MySQL/Postgres]                                    │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+Data Flows:
+  Flow 1 KFP run:  KFP API -> kube API (create Workflow) -> controller watches,
+                   creates pods -> argoexec init pulls inputs (S3 443) ->
+                   argoexec wait uploads outputs/logs (S3 443) -> writes
+                   WorkflowTaskResult (6443) -> controller updates status (6443)
+  Flow 2 HTTP:     controller creates WorkflowTaskSet + agent pod -> agent calls
+                   user endpoint (any port, TLS optional) -> patches status
+  Flow 3 Metrics:  Prometheus -> controller 9090/TCP HTTPS (self-signed, no auth)
+
+RBAC Summary:
+- RHOAI: DSPO namespace Role for the controller SA
+  (data-science-pipelines-operator config/internal/workflow-controller/role.yaml.tmpl).
+  Workflow pods run as the workflow-specified SA (default pipeline-runner-<dspa>).
+- Upstream cluster-install (NOT used by RHOAI), ClusterRole argo-cluster-role -> SA argo:
+  - core: pods, pods/exec            create,get,list,watch,update,patch,delete
+  - core: configmaps                 get,watch,list
+  - core: persistentvolumeclaims(+finalizers)  create,update,delete,get
+  - core: serviceaccounts            get,list
+  - core: events                     create,patch
+  - core: secrets (argo-workflows-agent-ca-certificates)  get
+  - argoproj.io: workflows, workflowtasksets, workflowartifactgctasks (+finalizers)
+                                     get,list,watch,update,patch,delete,create
+  - argoproj.io: workflowtemplates, clusterworkflowtemplates  get,list,watch
+  - argoproj.io: workflowtaskresults list,watch,deletecollection
+  - argoproj.io: cronworkflows(+finalizers)  get,list,watch,update,patch,delete
+  - policy: poddisruptionbudgets     create,get,delete
+- Upstream Role argo-role (ns argo) -> SA argo: leases create,get,update; secrets get
+- Upstream ClusterRole argo-server-cluster-role -> SA argo-server (not shipped)
+- argo-aggregate-to-view/edit/admin aggregate Workflow CR access into built-in roles
+
+Network Policy:
+- DSPO NetworkPolicy: controller ingress on 9090/TCP allowed only from monitoring
+  namespaces. Step pod egress is not restricted by this repo.
+
+Service Mesh Configuration:
+- None. No PeerAuthentication / AuthorizationPolicy defined.
+
+Secrets:
+- Artifact repository credentials (Opaque) - S3/GCS/Azure keys used by argoexec;
+  provisioned by DSPO / user; no auto-rotation
+- argo-workflows-agent-ca-certificates (Opaque) - optional CA bundle for agent pods
+- sso (Opaque) - argo-server SSO RSA key (not shipped)
+- argo-workflows-webhook-clients (Opaque) - webhook client tokens (not shipped)
+- argo-server TLS secret (kubernetes.io/tls) - else self-signed (not shipped)
+
+Security Observations:
+- Unauthenticated /healthz on 6060/TCP (plain HTTP, default mux).
+- Metrics on 9090 use a self-signed cert generated at startup; no client auth.
+- util/tls/tls.go:127 sets InsecureSkipVerify on the generated self-signed config.
+- HTTP templates can disable TLS verification per template.
+- FIPS: CGO_ENABLED=0 GOFIPS140=v1.0.0 -tags no_openssl, static binaries
+  (Go native FIPS 140-3 module, not OpenSSL). Base: ubi9/ubi-minimal-pqc.
+  Departs from the classic check-payload dynamic-OpenSSL rule; track acceptance.
+- Build: hermetic Konflux (gomod + rpm prefetch), multi-arch x86_64/arm64/ppc64le.

@@ -1,0 +1,203 @@
+ai-gateway-controller - Security Network Diagram (RHOAI 3.7-ea.1)
+Source: architecture/rhoai-3.7-ea.1/ai-gateway-controller.md
+Commit: f5b1b3e36c0582c2cdb1c0f4a29b28cb6ea3e048
+
+NOTE: The controller itself serves no request traffic. Its only listeners are
+metrics (8443) and health (8081). It affects the data path solely through
+Kubernetes API writes (EnvoyFilters, DestinationRules, ExtProc Deployments,
+HTTPRoutes, AuthPolicies, Secrets).
+
+═══════════════════════════════════════════════════════════════════════════
+ A. DATA PLANE (configured by ai-gateway-controller)
+═══════════════════════════════════════════════════════════════════════════
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                         │
+│  [External Client / Browser]                                            │
+│         │                                                               │
+│         │ Port: 443/TCP                                                 │
+│         │ Protocol: HTTPS                                               │
+│         │ Encryption: TLS (Gateway listener)                            │
+│         │ Auth: MaaS API key / token (models) | OIDC session (portal)   │
+│         ▼                                                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INGRESS - Gateway namespace: openshift-ingress (shared across tenants) │
+│                                                                         │
+│  [Gateway Envoy: maas-default-gateway / tenant Gateway / gatewayRefs]   │
+│  - TLS terminated at Gateway listener                                   │
+│  - Listener buffer limit 10 MiB (Gateway-wide)                          │
+│  - ExtProc filters: failure_mode_allow: false (fail-closed)             │
+│  - ExternalModel ExtProc disabled per route; enabled only on            │
+│    controller-owned HTTPRoutes                                          │
+│         │                                                               │
+│         ├──(1) payload-pre-processing[-tenant]   (pre-auth)             │
+│         │      Port: 9004/TCP  Protocol: gRPC (HTTP/2)                  │
+│         │      Encryption: TLS (service-ca payload-pre-processing-tls)  │
+│         │      Auth: None at app layer; NetworkPolicy = gateway pods    │
+│         │      Action: strip X-Gateway-Model-Name, re-derive from body  │
+│         │                                                               │
+│         ├──(2) Kuadrant wasm → Authorino / Limitador (maas-controller)  │
+│         │      Protocol: gRPC  Encryption: platform mTLS/TLS            │
+│         │      Auth: MaaS credential                                    │
+│         │                                                               │
+│         ├──(3) payload-processing[-tenant]       (post-auth, MaaS/KServe)│
+│         │      Port: 9004/TCP  gRPC  TLS (service-ca)                   │
+│         │      SA: payload-processing                                   │
+│         │                                                               │
+│         └──(4) payload-processing-external-model (tenant namespace)     │
+│                Port: 9004/TCP  gRPC  TLS (service-ca, SAN verified)     │
+│                Action: intelligent_route, credential_inject,            │
+│                        strip caller credentials + x-maas-* headers      │
+│                Mounts: provider Secret / agc-cred-<hash12>              │
+│                   │                                                     │
+│                   │ (4a, optional) NeMo Guardrails callout              │
+│                   │ Port: 8000/TCP HTTP, no auth                        │
+│                   │   or  8443/TCP HTTPS via kube-rbac-proxy, SA token  │
+│                   │ NetworkPolicy egress opened per callout             │
+│                   ▼                                                     │
+│                [TrustyAI NemoGuardrails]                                │
+│         │                                                               │
+│         │ (5) HTTPRoute → provider-<provider>[-<hash12>]                │
+│         │     ExternalName Service + ServiceEntry                       │
+│         │ Port: 443/TCP (or endpoint port)                              │
+│         │ Protocol: HTTPS                                               │
+│         │ Encryption: TLS SIMPLE, SNI = endpoint (Gateway DestinationRule)│
+│         │   trust: system roots or private CA (tls.credentialName SDS)  │
+│         │ Auth: API key / SigV4 / OAuth2 injected by ExtProc            │
+│         ▼                                                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                      │
+│                                                                         │
+│  [External LLM providers]                                               │
+│  - openai, anthropic, azure, aws-bedrock, vertex, bedrock-openai        │
+└─────────────────────────────────────────────────────────────────────────┘
+
+═══════════════════════════════════════════════════════════════════════════
+ B. CONSUMER PORTAL (OIDC mode)
+═══════════════════════════════════════════════════════════════════════════
+┌─────────────────────────────────────────────────────────────────────────┐
+│  [Browser] ── 443/TCP HTTPS TLS ──▶ [Gateway] /maas-portal/             │
+│                                         │                               │
+│   AuthPolicy maas-consumer-portal-session (Authorino, OPA rego)         │
+│   - Requires OIDC JWT (Bearer) or session cookie                        │
+│   - iss/azp must match configured issuer/client; else 302 /oauth2/start │
+│                                         │                               │
+│   Authorino ── 4180/TCP HTTPS (service-ca) ──▶ /oauth2/auth             │
+│   Gateway   ── 443 → 4180/TCP HTTPS re-encrypt (DestinationRule) ──▶    │
+│              /oauth2/* (AuthPolicy maas-consumer-portal-oauth2-anonymous)│
+│                                         ▼                               │
+│  [maas-consumer-portal-auth-proxy]  ns: tenant infra namespace          │
+│  - Image: kube-auth-proxy (default mutable tag odh-stable; RHOAI        │
+│    expected to override with digest RELATED_IMAGE_*)                    │
+│  - HTTPS 4180/TCP, --tls-min-version=TLS1.2; metrics 9000/TCP HTTP      │
+│  - Secure/HttpOnly cookies; --ssl-insecure-skip-verify=false            │
+│  - NetworkPolicy ingress: Gateway + Authorino (kuadrant-system) only    │
+│                                         │                               │
+│         │ 443/TCP HTTPS, system trust + odh-trusted-ca-bundle           │
+│         │ Auth: OIDC client credentials                                 │
+│         ▼                                                               │
+│  [OIDC Issuer] (external)                                               │
+│                                                                         │
+│  Gateway ── 8443/TCP HTTPS TLS SIMPLE (service-ca), via ReferenceGrant ─▶│
+│  [maas-portal Service] (dashboard ns, default redhat-ods-applications)  │
+│  - Injected headers: authorization, x-maas-identity                     │
+└─────────────────────────────────────────────────────────────────────────┘
+
+═══════════════════════════════════════════════════════════════════════════
+ C. CONTROL PLANE
+═══════════════════════════════════════════════════════════════════════════
+┌─────────────────────────────────────────────────────────────────────────┐
+│  CONTROL PLANE - ns: opendatahub (RHOAI ns substituted by operator)     │
+│                                                                         │
+│  [ai-gateway-controller]  Deployment, replicas: 1, leader election on   │
+│  - ServiceAccount: ai-gateway-controller                                │
+│  - Image: quay.io/rhoai/odh-ai-gateway-controller-rhel9                 │
+│  - Security: UID 1001, runAsNonRoot, drop ALL, readOnlyRootFilesystem,  │
+│    seccomp RuntimeDefault                                               │
+│  - Listeners:                                                           │
+│      8443/TCP HTTPS /metrics  TLS service-ca (Go crypto/tls defaults)   │
+│               Auth: Bearer → TokenReview + SubjectAccessReview          │
+│      8081/TCP HTTP  /healthz, /readyz  no auth (kubelet probes)         │
+│         │                                                               │
+│         │ Port: 6443/TCP                                                │
+│         │ Protocol: HTTPS (REST + watch, SSA, pods/log)                 │
+│         │ Encryption: TLS 1.2+                                          │
+│         │ Auth: ServiceAccount token                                    │
+│         ▼                                                               │
+│  [Kubernetes API Server]                                                │
+│                                                                         │
+│  Inbound: [Prometheus] redhat-ods-monitoring / openshift-monitoring     │
+│           ── 8443/TCP HTTPS, Bearer SA token ──▶ controller /metrics    │
+│           (NetworkPolicy restricts to these namespaces; 8081 open)      │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- ClusterRole: ai-gateway-controller-role
+  (bound by ClusterRoleBinding ai-gateway-controller-rolebinding to
+   opendatahub/ai-gateway-controller)
+  - maas.opendatahub.io: maastenantconfigs (get,list,watch,update,patch);
+      aitenants, maassubscriptions, maasmodelrefs, externalmodels (get,list,watch)
+  - inference.opendatahub.io: externalmodels, externalproviders
+      (get,list,watch,create,update,patch); /status (get,update,patch); /finalizers (update)
+  - aigateway.opendatahub.io: aiguardrails (get,list,watch); /status (get,patch)
+  - core: services, serviceaccounts, configmaps (full CRUD)
+  - core: secrets (get,list,watch,create,patch,delete)   ** CLUSTER-WIDE **
+  - core: pods (get,list); pods/log (get); namespaces (get,list,watch)
+  - apps: deployments (CRUD); replicasets (get,list)
+  - autoscaling: horizontalpodautoscalers (CRUD)
+  - networking.k8s.io: networkpolicies (CRUD)
+  - networking.istio.io: envoyfilters, destinationrules, serviceentries (CRUD)
+  - rbac.authorization.k8s.io: clusterrolebindings (CRUD);
+      clusterroles (get,list,watch,create,update,patch);
+      roles, rolebindings (get,list,create,update,patch,delete)
+  - gateway.networking.k8s.io: httproutes, referencegrants (CRUD); gateways (read)
+  - kuadrant.io: authpolicies (CRUD)
+  - monitoring.coreos.com: servicemonitors (CRUD)
+  - route.openshift.io: routes (get,list)
+  - trustyai.opendatahub.io: nemoguardrails (read)
+  - dscinitialization.opendatahub.io: dscinitializations (read)
+  - authentication.k8s.io tokenreviews / authorization.k8s.io subjectaccessreviews (create)
+  - coordination.k8s.io: leases (CRUD); events (create,patch)
+  - nonResourceURL /metrics (get)
+- Managed: payload-processing-metrics-auth (tokenreviews/SAR create)
+    → openshift-ingress/payload-processing
+- Managed: payload-processing-metrics-reader (/metrics get)
+    → redhat-ods-monitoring/prometheus-k8s
+
+  Risk: Ownership labels and field-manager checks (pkg/tenant/ownership.go)
+  are the safety boundary, NOT RBAC. A compromised controller SA gains
+  cluster-wide Secret read/write and Gateway filter-chain control.
+
+Service Mesh / Gateway Configuration:
+- EnvoyFilters (payload-processing, payload-processing-external-model-filters,
+  maas-consumer-portal-extproc-bypass): workloadSelector
+  gateway.networking.k8s.io/gateway-name=<gateway>; priority 10 after Kuadrant;
+  fail-closed ExtProc; per-route ExtProcPerRoute overrides
+- DestinationRules: ExtProc TLS SIMPLE; provider TLS SIMPLE with SNI;
+  portal re-encrypt to auth proxy and maas-portal
+- ServiceEntries for external provider hosts
+- Cross-namespace providers require Gateway API ReferenceGrant
+  (missing/unpermitted both → RefNotPermitted, no existence disclosure)
+
+NetworkPolicies:
+- Controller: metrics 8443 only from redhat-ods-monitoring, openshift-monitoring;
+  8081 probe port open
+- ExtProc: ingress only from Istio gateway pods (openshift-ingress) + monitoring;
+  egress DNS 53/5353, 443/6443, NeMo (per callout; widens to whole NeMo ns if
+  Service selector unreadable)
+- Auth proxy: ingress from Gateway + Authorino only
+- --skip-network-policy removes controller-managed ExtProc NetworkPolicies
+
+Secrets:
+- ai-gateway-controller-metrics-tls (kubernetes.io/tls) - metrics cert, service-ca, auto-rotate (loaded at startup)
+- payload-processing-tls / payload-pre-processing-tls (kubernetes.io/tls) - ExtProc gRPC TLS, service-ca
+- maas-consumer-portal-auth-proxy-tls (kubernetes.io/tls) - auth proxy cert, service-ca
+- maas-consumer-portal-auth-proxy-creds (Opaque) - OIDC client id/secret (copied from AITenant), 32-byte crypto/rand cookie secret; created by controller
+- <provider auth secret> (Opaque, key api-key) - user-provided provider credential, no rotation
+- agc-cred-<hash12> (Opaque) - controller copy of out-of-namespace credential into tenant ns ("exposure, not isolation")
+- <tls.credentialName> (+ -cacert) (Opaque) - private CA for provider TLS in Gateway ns, Istio SDS
+
+Crypto / FIPS:
+- Build: CGO_ENABLED=1, GOEXPERIMENT=strictfipsruntime, ubi9 ubi-minimal-pqc (digest-pinned)
+- Go stdlib crypto only (sha256 identifiers, crypto/rand, x509 PEM validation); no InsecureSkipVerify
+- Metrics TLS uses Go crypto/tls defaults (no explicit MinVersion/ciphers)

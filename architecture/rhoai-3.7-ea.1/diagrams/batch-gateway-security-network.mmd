@@ -1,0 +1,59 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        Client["API Client<br/>Bearer token (Kubernetes/OIDC)"]
+    end
+
+    subgraph Ingress["INGRESS (Platform Gateway)"]
+        BatchRoute["Platform Gateway: batch-route<br/>HTTPRoute PathPrefix /v1/batches, /v1/files<br/>443/TCP HTTPS, gateway-terminated TLS<br/>Kuadrant AuthPolicy + RateLimitPolicy<br/>sets X-MaaS-Username"]
+        LLMRoute["Internal Gateway: batch-llm-route<br/>llm-d inference gateway / EPP<br/>SubjectAccessReview on inferencepools"]
+    end
+
+    subgraph Cluster["CLUSTER INTERNAL (no NetworkPolicy shipped)"]
+        direction TB
+        subgraph NS["Namespace: release namespace"]
+            API["batch-gateway-apiserver<br/>8000/TCP HTTP or HTTPS (TLS 1.2+ optional)<br/>8081/TCP HTTP obs<br/>No in-app auth; tenant = last X-MaaS-Username, fallback default"]
+            Proc["batch-gateway-processor (StatefulSet)<br/>9090/TCP HTTP obs<br/>Headless Service"]
+            GC["batch-gateway-gc<br/>9091/TCP HTTP obs<br/>SA: gc ServiceAccount<br/>Role: pod-watcher"]
+        end
+        K8sAPI["Kubernetes API<br/>6443/TCP HTTPS"]
+        Prom["Prometheus<br/>ServiceMonitor / PodMonitor"]
+    end
+
+    subgraph Data["DATA SERVICES (shared, single credential set)"]
+        PG[("PostgreSQL<br/>5432/TCP, TLS per sslmode<br/>stores user bearer tokens in tags")]
+        S3[("S3-compatible storage<br/>443/TCP HTTPS, SigV4")]
+        Redis[("Redis/Valkey<br/>6379/TCP, redis:// or rediss://")]
+        OTel["OTel Collector<br/>4317/TCP OTLP/gRPC<br/>plaintext by default"]
+    end
+
+    Client -->|"HTTPS/443<br/>TLS (gateway)<br/>Bearer token"| BatchRoute
+    BatchRoute -->|"HTTP or HTTPS/8000<br/>None or TLS 1.2+<br/>Tenant header"| API
+
+    API -->|"TCP/5432<br/>sslmode<br/>postgresql-url creds"| PG
+    API -->|"HTTPS/443<br/>TLS<br/>SigV4"| S3
+
+    Proc -->|"TCP/5432<br/>sslmode<br/>postgresql-url creds"| PG
+    Proc -->|"HTTPS/443<br/>TLS<br/>SigV4"| S3
+    Proc -->|"HTTP/HTTPS URL-configured<br/>Optional TLS 1.2+ / mTLS<br/>Forwarded user bearer, optional API key"| LLMRoute
+    Proc -->|"TCP/6379<br/>per URL scheme<br/>redis-url creds"| Redis
+
+    GC -->|"TCP/5432<br/>sslmode"| PG
+    GC -->|"HTTPS/443<br/>SigV4"| S3
+    GC -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA token"| K8sAPI
+
+    API -.->|"gRPC/4317 plaintext"| OTel
+    Proc -.->|"gRPC/4317 plaintext"| OTel
+    GC -.->|"gRPC/4317 plaintext"| OTel
+    Prom -.->|"HTTP/8081, 9090, 9091<br/>no auth"| API
+    Prom -.-> Proc
+    Prom -.-> GC
+
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef internal fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+
+    class Client external
+    class BatchRoute,LLMRoute ingress
+    class API,Proc,GC,K8sAPI,Prom internal
+    class PG,S3,Redis,OTel externalservice

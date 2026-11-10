@@ -1,0 +1,40 @@
+sequenceDiagram
+    participant Prom as Prometheus / Thanos Querier<br/>9090/TCP or 9091/TCP HTTPS
+    participant Pods as vLLM / EPP pods<br/>metrics port
+    participant KEDA as KEDA operator
+    participant HPA as HPA (KEDA-managed or plain)
+    participant API as Kubernetes API<br/>6443/TCP HTTPS
+    participant WVA as WVA controller (legacy)<br/>8443/TCP metrics
+    participant Adapter as prometheus-adapter (optional)
+
+    Note over Prom,API: Flow 1 - KEDA blueprint scaling (current model, no repo runtime)
+    Prom->>Pods: Scrape /metrics<br/>HTTP(S), per ServiceMonitor
+    Pods-->>Prom: queue depth, KV-cache utilization, EPP signals
+    KEDA->>Prom: PromQL trigger query<br/>HTTPS TLS, Bearer (TriggerAuthentication)
+    Prom-->>KEDA: Trigger value
+    KEDA->>HPA: Update external metric
+    HPA->>API: Update deployments/scale<br/>HTTPS TLS 1.2+, SA token
+
+    Note over Prom,WVA: Flow 2 - WVA optimize loop (legacy, deprecated)
+    WVA->>API: Watch HPA / ScaledObject / InferencePool / ConfigMap<br/>HTTPS TLS 1.2+, SA token controller-manager
+    WVA->>Prom: PromQL query (vLLM, EPP metrics)<br/>HTTPS TLS 1.2+ (skip-verify by default on K8s)<br/>Bearer SA token
+    Prom-->>WVA: Metric samples
+    WVA->>Pods: GET EPP /metrics<br/>HTTP plaintext (no TLS)<br/>Bearer epp-metrics-reader token
+    Pods-->>WVA: Flow-control queue size
+    Note over WVA: Analyze (saturation / throughput / Kalman queueing)<br/>Limit (GPU inventory / ResourceQuota)<br/>Set wva_desired_replicas gauge
+    Prom->>WVA: Scrape /metrics 8443/TCP<br/>HTTPS TLS, Bearer to TokenReview + SAR
+    WVA-->>Prom: wva_desired_replicas
+    alt KEDA path
+        KEDA->>Prom: Query wva_desired_replicas<br/>HTTPS TLS, Bearer
+        Prom-->>KEDA: Desired replicas
+        KEDA->>HPA: Update external metric
+    else Plain HPA path
+        Adapter->>Prom: Query wva_desired_replicas<br/>HTTPS TLS, Bearer
+        HPA->>Adapter: Read external metric (via API aggregation)
+    end
+    HPA->>API: Update scale target<br/>HTTPS TLS 1.2+, SA token
+
+    Note over Prom,WVA: Flow 3 - Scale from zero (legacy)
+    WVA->>Pods: Read EPP flow-control queue (direct scrape or Prometheus)<br/>Bearer
+    Pods-->>WVA: Pending requests > 0
+    WVA->>API: Update deployments/scale or leaderworkersets/scale<br/>HTTPS TLS 1.2+, SA token (DirectActuator)

@@ -1,0 +1,159 @@
+workbenches-operator - Security Network Diagram (RHOAI 3.7-ea.1)
+Source: architecture/rhoai-3.7-ea.1/workbenches-operator.md
+Repo:   red-hat-data-services/workbenches-operator @ 9d2c6e8 (branch rhoai-3.7-ea.1)
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  USERS / CLIENTS (authenticated by kube-apiserver)                          │
+│                                                                             │
+│  [User / ODH Dashboard]            [Platform Orchestrator (rhods-operator)] │
+│         │                                   │                               │
+│         │ Port: 6443/TCP                    │ Port: 6443/TCP                │
+│         │ Protocol: HTTPS                   │ Protocol: HTTPS               │
+│         │ Encryption: TLS 1.2+              │ Encryption: TLS 1.2+          │
+│         │ Auth: User Bearer token           │ Auth: ServiceAccount token    │
+│         │ Action: CREATE/UPDATE Notebook    │ Action: create/update         │
+│         │         (kubeflow.org/v1)         │   Workbenches default-workbenches
+│         ▼                                   ▼                               │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  CLUSTER CONTROL PLANE                                                      │
+│                                                                             │
+│  [kube-apiserver]  6443/TCP HTTPS TLS 1.2+                                  │
+│         │                                                                   │
+│         │ Port: 443/TCP (Service) → 9443/TCP (pod)                          │
+│         │ Protocol: HTTPS (AdmissionReview POST)                            │
+│         │ Encryption: TLS per OpenShift APIServer TLS profile               │
+│         │             (fallback non-OCP: TLS 1.2+ Mozilla Intermediate)     │
+│         │ Auth: server identity via CA bundle injected by service-CA /      │
+│         │       cert-manager (no client auth on webhook server)             │
+│         │ failurePolicy: Fail, timeout 5s  → operator outage blocks all     │
+│         │       Notebook CREATE/UPDATE cluster-wide                         │
+│         ▼                                                                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  OPERATOR NAMESPACE (workbenches-operator-system / applications NS)         │
+│  NetworkPolicy: controller-manager-allow-ports                              │
+│    ingress 8443 ← monitoring namespaces only                                │
+│    ingress 8081, 9443 ← any peer                                            │
+│    egress  allow-all                                                        │
+│                                                                             │
+│  [Service workbenches-operator-webhook-service]  ClusterIP 443 → 9443       │
+│         │                                                                   │
+│         ▼                                                                   │
+│  [workbenches-operator pod]                                                 │
+│  - Deployment: workbenches-operator, replicas: 1                            │
+│  - Leader election: Helm default false (kustomize on)                       │
+│  - ServiceAccount: workbenches-operator-controller-manager                  │
+│  - Image: odh-workbenches-operator-rhel9 (ubi-minimal-pqc, digest-pinned)   │
+│  - SecurityContext: UID 65532, non-root, RO rootfs, drop ALL,               │
+│                     seccomp RuntimeDefault                                  │
+│  - Ports:                                                                   │
+│      9443/TCP HTTPS  webhooks  /workbenches-connection-notebook             │
+│                                /workbenches-hardware-profile                │
+│      8443/TCP HTTPS  /metrics  (Bearer → TokenReview + SAR; no Service)     │
+│      8081/TCP HTTP   /healthz, /readyz  (no TLS, no auth)                   │
+│  - HTTP/2 disabled by default (--enable-http2=false)                        │
+│  - TLS profile watcher restarts pod on APIServer profile change             │
+│         │                                                                   │
+│         │ Port: 6443/TCP                                                    │
+│         │ Protocol: HTTPS                                                   │
+│         │ Encryption: TLS 1.2+                                              │
+│         │ Auth: ServiceAccount token                                        │
+│         │ Purpose: watches, SSA of operands, get Secrets/HardwareProfile/   │
+│         │          ResourceClaimTemplate, SubjectAccessReview (for the      │
+│         │          requesting user), Events, TLS profile reads              │
+│         ▼                                                                   │
+│  [kube-apiserver]                                                           │
+│                                                                             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  MONITORING NAMESPACES                                                      │
+│  openshift-monitoring, openshift-user-workload-monitoring,                  │
+│  redhat-ods-monitoring, opendatahub-monitoring                              │
+│                                                                             │
+│  [Prometheus] ──► pod :8443/TCP  HTTPS, TLS (APIServer profile)             │
+│                   Auth: Bearer token (TokenReview + SubjectAccessReview)    │
+│                                                                             │
+│  [Kubelet] ──► pod :8081/TCP  HTTP plaintext, no auth (probes)              │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  CERTIFICATE PROVIDERS (detected in order; webhooks disabled if none)       │
+│                                                                             │
+│  1. OpenShift service-CA  (route.openshift.io / security.openshift.io)      │
+│     - Annotates webhook Service + MutatingWebhookConfiguration              │
+│  2. cert-manager          (cert-manager.io)                                 │
+│     - Self-signed ClusterIssuer + Certificate workbenches-operator-webhook-cert
+│  3. None → operator DELETES its own MutatingWebhookConfiguration            │
+│  Re-ensured every 30s by background TLS ensurer                             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  USER / TENANT NAMESPACES                                                   │
+│                                                                             │
+│  [Notebook CRs]  mutated in admission (envFrom, resources, nodeSelector,    │
+│                  tolerations, kueue.x-k8s.io/queue-name, resourceClaims)    │
+│  [Connection Secrets]  read by operator SA; injected only if requesting     │
+│                        user passes SAR "get secrets"                        │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+No external ingress: the operator creates no Routes/HTTPRoutes. It only passes
+gatewayDomain/ingresses into operand manifests as the `gateway-url` parameter.
+
+RBAC Summary (SA: workbenches-operator-controller-manager):
+- ClusterRole: workbenches-operator-manager-role
+  - "" configmaps, secrets, serviceaccounts, services: create, delete, get, list, patch, update, watch
+  - "" events: create, patch
+  - "" namespaces: create, get, list, patch, update, watch
+  - admissionregistration.k8s.io mutating/validatingwebhookconfigurations: full CRUD + watch
+  - apiextensions.k8s.io customresourcedefinitions: create, get, list, patch, update, watch (no delete)
+  - apps deployments: full CRUD + watch
+  - authorization.k8s.io subjectaccessreviews: create
+  - cert-manager.io clusterissuers: create, get, patch
+  - components.platform.opendatahub.io workbenches: full CRUD + watch;
+      workbenches/status: get, patch, update; workbenches/finalizers: update
+  - config.openshift.io apiservers: get, list, watch
+  - coordination.k8s.io leases: full CRUD + watch
+  - image.openshift.io imagestreams: full CRUD + watch
+  - infrastructure.opendatahub.io hardwareprofiles: get
+  - kubeflow.org notebooks: full CRUD + watch; workspacekinds: create, delete, list, patch
+  - monitoring.coreos.com servicemonitors: full CRUD + watch
+  - networking.k8s.io networkpolicies: full CRUD + watch
+  - rbac.authorization.k8s.io clusterroles, clusterrolebindings, roles, rolebindings: full CRUD + watch
+  - resource.k8s.io resourceclaimtemplates: get
+- ClusterRole: workbenches-operator-manager-rbac-escalate-role (hand-maintained)
+  - rbac.authorization.k8s.io clusterroles: bind, escalate
+    restricted by resourceNames (23 names: notebook-controller-*, odh-notebook-controller-*,
+    workspaces-*, kubeflow-workspaces-*, aggregate-to-kubeflow-workspaces-*)
+- Role (operator NS): workbenches-operator-leader-election-role
+  - "" configmaps, coordination.k8s.io leases: full CRUD + watch; "" events: create, patch
+- Role (operator NS): workbenches-operator-webhook-tls-role
+  - cert-manager.io certificates: create, get, patch
+
+Admission Webhooks (served by this operator, kubeflow.org/v1 Notebook CREATE/UPDATE):
+- connection-notebook.opendatahub.io        /workbenches-connection-notebook
+  failurePolicy Fail, timeout 5s, sideEffects None
+  annotation opendatahub.io/connections (≤4096 bytes); SAR per Secret for requesting user
+- hardwareprofile-notebook-injector.opendatahub.io  /workbenches-hardware-profile
+  failurePolicy Fail, timeout 5s, sideEffects NoneOnDryRun
+  annotations opendatahub.io/hardware-profile-name / -namespace
+(The notebooks.kubeflow.org /convert conversion webhook is served by the operand
+ notebook controller, not by this operator.)
+
+Service Mesh Configuration:
+- None. No Istio sidecar / PeerAuthentication / AuthorizationPolicy in operator manifests.
+
+Secrets:
+- workbenches-operator-controller-webhook-cert (kubernetes.io/tls) - webhook serving cert,
+  mounted at /tmp/k8s-webhook-server/serving-certs; provisioned by service-CA or cert-manager;
+  auto-rotated; reloaded by controller-runtime certwatcher
+- User connection Secrets (Opaque, any namespace) - read-only existence/access check before
+  envFrom injection; provisioned by users / dashboard
+
+TLS / FIPS:
+- crypto/tls driven by OpenShift APIServer TLS profile (min version + Go-negotiable ciphers,
+  RC4 excluded); refuses to start on unusable profile or unreadable adherence policy
+- Non-OpenShift fallback: TLS 1.2 min, Mozilla Intermediate ECDHE + AES-GCM/ChaCha20-Poly1305
+  (ChaCha20 not FIPS-approved; path irrelevant on OpenShift)
+- Build: CGO_ENABLED=1, -tags strictfipsruntime, dynamic link to UBI 9 OpenSSL
+- No InsecureSkipVerify, MD5, SHA1 or JWT usage detected
+
+Notable Risks:
+- Single replica + failurePolicy Fail: operator outage blocks Notebook CREATE/UPDATE for all tenants
+- Operator SA can read all Secrets cluster-wide; connection isolation relies on the SAR check
+- Webhook port 9443 and probe port 8081 open to any peer; egress allow-all
+- HardwareProfile namespace taken from user annotation (cross-namespace profile reference)
+- RHOAI operand manifests pinned to rhoai-3.6 refs on this 3.7-ea.1 branch

@@ -1,0 +1,58 @@
+sequenceDiagram
+    autonumber
+    participant Client as API Client
+    participant ExtGW as External Gateway<br/>batch-route 443/TCP HTTPS<br/>Kuadrant AuthPolicy
+    participant API as batch-gateway-apiserver<br/>8000/TCP HTTP (TLS optional)
+    participant PG as PostgreSQL<br/>5432/TCP (sslmode)
+    participant S3 as S3 / Filesystem<br/>443/TCP HTTPS
+    participant Proc as batch-gateway-processor<br/>StatefulSet
+    participant Redis as Redis/Valkey<br/>6379/TCP RESP
+    participant Async as llm-d-async dispatcher
+    participant IntGW as Internal Gateway<br/>batch-llm-route (docs: 80/TCP)
+    participant Sched as llm-d scheduler / vLLM
+    participant GC as batch-gateway-gc
+    participant K8s as Kubernetes API<br/>6443/TCP HTTPS
+
+    Note over Client,PG: Flow 1: File upload and batch creation
+    Client->>ExtGW: POST /v1/files (multipart JSONL)<br/>Bearer token, TLS
+    ExtGW->>ExtGW: AuthPolicy TokenReview / API key<br/>RateLimitPolicy (401 / 429)
+    ExtGW->>API: Forward HTTP :8000<br/>injects X-MaaS-Username
+    API->>S3: PutObject under t-sha256(tenant)/<br/>S3 access key
+    API->>PG: INSERT file_items (tenant_id)
+    API-->>Client: File object
+    Client->>ExtGW: POST /v1/batches (input_file_id)<br/>Bearer token
+    ExtGW->>API: Forward + X-MaaS-Username
+    API->>PG: INSERT batch_items (priority from SLO)<br/>tags pth:Authorization stored in plaintext
+    API-->>Client: Batch object (validating)
+
+    Note over Proc,Sched: Flow 2: Batch processing (sync dispatch, default)
+    Proc->>PG: Dequeue by priority, claim processor_id / epoch / lease<br/>LISTEN for cancel events
+    Proc->>S3: Download input file
+    Proc->>Proc: Group by model + system-prompt hash<br/>write plan files to workDir
+    loop Each request, under global/per-endpoint semaphores + AIMD
+        Proc->>IntGW: POST /v1/chat/completions<br/>replayed user Bearer and/or inference-api-key<br/>optional TLS 1.2+/mTLS
+        IntGW->>IntGW: AuthPolicy SubjectAccessReview on inferencepools
+        IntGW->>Sched: Route to model server
+        Sched-->>IntGW: Completion
+        IntGW-->>Proc: 200 (or 429/5xx shrinks concurrency)
+    end
+    Proc->>S3: Upload output / error JSONL
+    Proc->>PG: Update status, request counts, output_file_id
+
+    Note over Proc,IntGW: Flow 3: Async dispatch (dispatchMode=async)
+    Proc->>Redis: ZADD request messages (carry user token)<br/>optional TLS, URL password
+    Async->>Redis: Consume requests
+    Async->>IntGW: Inference with pass-through Bearer
+    Async->>Redis: Write results
+    Proc->>Redis: Poll results
+
+    Note over GC,K8s: Flow 4: Garbage collection and orphan recovery
+    GC->>K8s: Watch processor StatefulSet, list pods<br/>ServiceAccount token, Role gc-pod-watcher
+    GC->>PG: Delete expired rows, reclaim jobs of dead processors<br/>(only when readyReplicas == replicas)
+    GC->>S3: Delete expired objects
+
+    Note over Client,API: Status polling
+    Client->>ExtGW: GET /v1/batches/{batch_id}
+    ExtGW->>API: Forward + X-MaaS-Username
+    API->>PG: SELECT WHERE tenant_id = header value
+    API-->>Client: Batch status (cross-tenant returns 404)

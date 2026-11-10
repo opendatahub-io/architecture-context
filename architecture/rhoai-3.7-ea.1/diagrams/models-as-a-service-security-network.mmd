@@ -1,0 +1,94 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        Client["API Client<br/>Bearer sk-oai-... API key"]
+        User["User / Dashboard<br/>OpenShift / OIDC token"]
+    end
+
+    subgraph Ingress["INGRESS - Namespace: openshift-ingress"]
+        Gateway["maas-default-gateway<br/>gatewayClass openshift-default<br/>maas.CLUSTER_DOMAIN<br/>443/TCP HTTPS, TLS terminate<br/>cert CERT_NAME"]
+        IPPPre["payload-processing ext_proc ipp-pre<br/>9004/TCP gRPC<br/>FAIL-OPEN (pre-auth)"]
+        IPPPost["payload-processing ext_proc ipp<br/>9004/TCP gRPC<br/>FAIL-CLOSED (post-auth)<br/>SA: payload-processing"]
+    end
+
+    subgraph Kuadrant["KUADRANT / RHCL POLICY ENFORCEMENT"]
+        Authorino["Authorino<br/>AuthPolicy maas-api-auth-policy<br/>+ per-model AuthPolicies<br/>API key / TokenReview / OIDC"]
+        Limitador["Limitador<br/>TokenRateLimitPolicy per subscription<br/>gateway-default-deny = 0"]
+    end
+
+    subgraph Infra["INTERNAL - Infra namespace: redhat-ai-gateway-infra (per tenant)"]
+        Api["maas-api-TENANT<br/>8443/TCP HTTPS TLS 1.2+ (service-ca)<br/>9090/TCP HTTPS metrics<br/>SA: maas-api<br/>NetworkPolicy maas-authorino-allow"]
+        InternalCB["/internal/v1/api-keys/validate<br/>/internal/v1/subscriptions/select<br/>NO CALLER AUTH - NetworkPolicy only"]
+        Cron["maas-api-cleanup CronJob<br/>SA: maas-api-cleanup"]
+    end
+
+    subgraph AppNS["INTERNAL - Namespace: redhat-ods-applications"]
+        Ctrl["maas-controller<br/>SA: maas-controller<br/>8443/TCP metrics, 9443/TCP webhooks<br/>8081/TCP probes"]
+        Discovery["maas-discovery (optional)<br/>8443/TCP HTTPS TokenReview"]
+        RevokeJob["Revocation Job<br/>SA: maas-api-cleanup"]
+    end
+
+    subgraph ControlPlane["KUBERNETES CONTROL PLANE"]
+        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS"]
+    end
+
+    subgraph Backends["MODEL BACKENDS"]
+        KServe["KServe LLMInferenceService<br/>8000 or 443/TCP HTTPS"]
+    end
+
+    subgraph ExtSvc["EXTERNAL SERVICES"]
+        Postgres[("PostgreSQL<br/>5432/TCP<br/>sslmode per URL")]
+        Providers["External LLM providers<br/>443/TCP HTTPS<br/>via Istio ServiceEntry"]
+        Loki["Loki / OTEL collector<br/>HTTPS / OTLP"]
+    end
+
+    %% Ingress flows
+    Client -->|HTTPS/443<br/>TLS gateway cert<br/>Bearer API key| Gateway
+    User -->|HTTPS/443<br/>TLS<br/>Bearer OpenShift/OIDC token| Gateway
+    Gateway -->|gRPC/9004<br/>TLS skip-verify<br/>no auth| IPPPre
+    Gateway -->|gRPC ext_authz<br/>TLS| Authorino
+    Gateway -->|gRPC<br/>token quota| Limitador
+    Gateway -->|gRPC/9004<br/>TLS skip-verify<br/>no auth| IPPPost
+
+    %% Auth callbacks
+    Authorino -->|HTTPS/8443<br/>TLS 1.2+<br/>no caller auth| InternalCB
+    InternalCB --- Api
+    Authorino -->|HTTPS/6443<br/>TokenReview| K8sAPI
+
+    %% Gateway to maas-api and backends
+    Gateway -->|HTTPS/8443<br/>DR SIMPLE insecureSkipVerify<br/>X-MaaS-* headers injected| Api
+    Gateway -->|HTTPS/8000 or 443<br/>TLS<br/>Authorization stripped| KServe
+    Gateway -->|HTTPS/443<br/>TLS<br/>provider API key| Providers
+
+    %% maas-api egress
+    Api -->|PostgreSQL/5432<br/>sslmode per URL<br/>DB creds maas-db-config| Postgres
+    Api -->|HTTPS/6443<br/>SA token<br/>informers, TokenReview, SAR| K8sAPI
+    Api -->|HTTPS<br/>Bearer LOKI_READ_TOKEN| Loki
+    Api -->|HTTPS/443<br/>forwarded Bearer<br/>model access probes| Gateway
+
+    %% Cleanup / revocation
+    Cron -->|HTTPS/8443<br/>TLS CA bundle<br/>Bearer SA token| Api
+    RevokeJob -->|HTTPS/8443<br/>TLS CA bundle<br/>Bearer SA token| Api
+
+    %% Controller
+    Ctrl -->|HTTPS/6443<br/>SA token<br/>watch, CRUD, SSA| K8sAPI
+    K8sAPI -->|HTTPS/443 to 9443<br/>service-ca TLS<br/>admission webhooks| Ctrl
+    Discovery -->|HTTPS/6443<br/>SA token<br/>TokenReview, SAR| K8sAPI
+
+    %% Styling
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef policy fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef internal fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef risk fill:#f8cecc,stroke:#b85450,stroke-width:3px
+    classDef controlplane fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+
+    class Client,User external
+    class Gateway,IPPPost ingress
+    class IPPPre risk
+    class Authorino,Limitador policy
+    class Api,Cron,Ctrl,Discovery,RevokeJob internal
+    class InternalCB risk
+    class K8sAPI controlplane
+    class KServe internal
+    class Postgres,Providers,Loki externalservice

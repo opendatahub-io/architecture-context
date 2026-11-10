@@ -1,0 +1,46 @@
+sequenceDiagram
+    participant Client as External Client
+    participant Route as OpenShift Route / Gateway<br/>443/TCP HTTPS TLS
+    participant Svc as isvc-predictor Service<br/>ClusterIP 80/TCP
+    participant OVMS as OVMS REST (Drogon)<br/>8888/TCP HTTP
+    participant GRPCc as In-cluster gRPC client
+    participant OVgrpc as OVMS gRPC<br/>8001/TCP insecure
+    participant Engine as OpenVINO / GenAI<br/>(in-process)
+    participant Init as KServe storage initializer
+    participant Store as S3 / GCS / Azure / HF<br/>443/TCP HTTPS
+    participant Prom as Prometheus
+
+    Note over Init,Store: Flow 3: Model loading
+    Init->>Store: Download model artifacts<br/>HTTPS/443 TLS, data connection credentials
+    Store-->>Init: Model files
+    Init->>OVMS: Write to /mnt/models (emptyDir)
+    OVMS->>Store: Optional direct s3:// gs:// az:// read or --pull<br/>HTTPS/443 TLS, AWS/GCS/Azure creds or HF_TOKEN
+    Store-->>OVMS: Model files
+
+    Note over Client,Engine: Flow 1: KServe v2 REST inference
+    Client->>Route: POST /v2/models/{m}/infer<br/>HTTPS/443, Bearer token if platform auth enabled
+    Route->>Svc: HTTP/80 (or platform proxy TLS)
+    Svc->>OVMS: HTTP/8888, no auth in-process
+    OVMS->>Engine: Inference request
+    Engine-->>OVMS: Output tensors
+    OVMS-->>Svc: JSON response
+    Svc-->>Route: Response
+    Route-->>Client: HTTPS response
+
+    Note over Client,Engine: Flow 2: OpenAI-compatible generation
+    Client->>Route: POST /v3/chat/completions<br/>HTTPS/443, platform token (optional)
+    Route->>OVMS: HTTP/8888<br/>Authorization: Bearer API key (if configured)
+    OVMS->>Engine: MediaPipe graph to OpenVINO GenAI<br/>continuous batching
+    Engine-->>OVMS: Tokens
+    OVMS-->>Route: SSE stream
+    Route-->>Client: SSE stream over HTTPS
+
+    Note over GRPCc,OVgrpc: In-cluster gRPC only (port 8001 not declared in template)
+    GRPCc->>OVgrpc: ModelInfer / Predict<br/>gRPC HTTP/2 plaintext, no auth
+    OVgrpc->>Engine: Inference
+    Engine-->>OVgrpc: Result
+    OVgrpc-->>GRPCc: Response
+
+    Note over Prom,OVMS: Flow 4: Metrics scrape
+    Prom->>OVMS: GET /metrics<br/>HTTP/8888, no auth
+    OVMS-->>Prom: Prometheus metrics

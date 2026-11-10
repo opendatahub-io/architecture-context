@@ -1,0 +1,115 @@
+llm-d-inference-payload-processor - Security Network Diagram (RHOAI 3.7 EA1)
+Source: architecture/rhoai-3.7-ea.1/llm-d-inference-payload-processor.md (commit 373c6b2)
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                         │
+│  [Client]                                                               │
+│         │ Port: 443/TCP or 80/TCP                                       │
+│         │ Protocol: HTTPS / HTTP (OpenAI-compatible API)                │
+│         │ Encryption: per Gateway listener                              │
+│         │ Auth: per Gateway policy                                      │
+│         ▼                                                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INGRESS - Inference Gateway (Istio / Envoy / GKE)                      │
+│                                                                         │
+│  [Inference Gateway - inferenceGateway.name (default inference-gateway)]│
+│  - EnvoyFilter HTTP_FILTER (GATEWAY context), INSERT_FIRST              │
+│  - ext_proc processing mode: FULL_DUPLEX_STREAMED bodies                │
+│  - failure_mode_allow: false  → fails CLOSED if IPP is unavailable      │
+│  - GKE variant: GCPRoutingExtension, 1s timeout                         │
+│         │                                                               │
+│         │ Port: 9004/TCP (Service payload-processor, ClusterIP,         │
+│         │       appProtocol HTTP2)                                      │
+│         │ Protocol: gRPC envoy.service.ext_proc.v3.ExternalProcessor    │
+│         │ Encryption: TLS, self-signed RSA-4096, generated in memory    │
+│         │             per start, 10y validity, Go default TLS (1.2+)    │
+│         │ Server verification: NONE (DestinationRule SIMPLE,            │
+│         │             insecureSkipVerify: true)                         │
+│         │ Client Auth: NONE (no gRPC interceptor)                       │
+│         ▼                                                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│  CLUSTER INTERNAL (no NetworkPolicy / AuthorizationPolicy shipped)      │
+│                                                                         │
+│  [payload-processor Deployment]                                         │
+│  - Namespace: Helm release namespace                                    │
+│  - ServiceAccount: <name>-<release>                                     │
+│  - Image: ghcr.io/llm-d/llm-d-inference-payload-processor:v0.1.0        │
+│           (distroless/static:nonroot, UID 65532, CGO_ENABLED=0)         │
+│  - Replicas: 1 (no PDB/HPA/resources/anti-affinity) → SPOF for Gateway  │
+│  - Listeners:                                                           │
+│      9004/TCP gRPC ext_proc  TLS (self-signed)   no auth               │
+│      9005/TCP gRPC health    plaintext           no auth, always SERVING│
+│      9090/TCP HTTP /metrics, /debug/pprof/*      plain HTTP            │
+│               auth: TokenReview+SAR filter when --metrics-endpoint-auth │
+│               (default true); not exposed by chart Service              │
+│  - Any pod able to reach 9004 can open ext_proc streams                 │
+│         │                                                               │
+│         │ Returns header mutations X-Gateway-Model-Name /               │
+│         │ X-Gateway-Base-Model-Name → Gateway routes by header          │
+│         ▼                                                               │
+│  [InferencePools / llm-d-router EPP → model server pods]                │
+│  - Port / Protocol / TLS / Auth: per backend                            │
+│                                                                         │
+│  [Kubelet / GKE HealthCheckPolicy] ──gRPC 9005/TCP plaintext──▶ IPP     │
+│  [Prometheus] ──HTTP 9090/TCP, Bearer token in cleartext──▶ IPP         │
+│         │                                                               │
+│         │ Port: 6443/TCP                                                │
+│         │ Protocol: HTTPS                                               │
+│         │ Encryption: TLS 1.2+                                          │
+│         │ Auth: ServiceAccount token                                    │
+│         ▼                                                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│  KUBERNETES CONTROL PLANE                                               │
+│                                                                         │
+│  [Kubernetes API]                                                       │
+│  - ConfigMap get/list/watch (ConfigMapReconciler, informer cache)       │
+│  - TokenReview / SubjectAccessReview (metrics auth) - RBAC NOT granted  │
+├─────────────────────────────────────────────────────────────────────────┤
+│  OPTIONAL EXTERNAL SERVICES                                             │
+│                                                                         │
+│  [OTLP collector] - 4317/TCP gRPC, plaintext (otlptracegrpc.WithInsecure)│
+│  - Only when OTEL_TRACES_EXPORTER=otlp; chart default tracing disabled  │
+└─────────────────────────────────────────────────────────────────────────┘
+
+Services:
+- payload-processor (Helm)  ClusterIP  9004/TCP → 9004  gRPC/HTTP2  TLS self-signed  no auth
+- payload-processor (e2e)   NodePort   9004/TCP         gRPC        none (--secure-serving=false)
+- payload-processor (e2e)   NodePort   9090/TCP (nodePort 30090)  HTTP  none (--metrics-endpoint-auth=false)
+- envoy (e2e)               NodePort   8081/TCP  HTTP  test only
+- vllm-* simulators (e2e)   ClusterIP  8000/TCP  HTTP  test only
+
+RBAC Summary:
+- Role <name>-<release>-configmap-reader (default, namespaced)
+  - API Groups: ""   Resources: configmaps   Verbs: get, list, watch
+  - Bound via RoleBinding <name>-<release> → SA <name>-<release>
+- ClusterRole payload-processor-configmap-reader (multiNamespace: true)
+  - API Groups: ""   Resources: configmaps (cluster-wide)   Verbs: get, list, watch
+  - Bound via ClusterRoleBinding payload-processor-configmap-reader → SA <name>-<release>
+- ClusterRole payload-processor-auth-reviewer (e2e deploy/)
+  - API Groups: ""   Resources: configmaps   Verbs: get, list, watch
+  - Bound via payload-processor-auth-reviewer-binding → SA payload-processor
+- GAP: no role grants create on tokenreviews / subjectaccessreviews, which the
+  default --metrics-endpoint-auth=true filter requires → scrapes likely rejected.
+
+Service Mesh Configuration (Istio provider):
+- EnvoyFilter payload-processor: ext_proc HTTP filter on target Gateway,
+  failure_mode_allow: false, FULL_DUPLEX_STREAMED
+- DestinationRule: TLS mode SIMPLE, insecureSkipVerify: true
+- No PeerAuthentication / AuthorizationPolicy / NetworkPolicy shipped
+
+Secrets:
+- None. ext_proc TLS key/cert generated in memory at startup (RSA-4096,
+  10-year validity), not persisted, regenerated on each pod restart.
+- CertReloader for mounted tls.crt/tls.key exists but is unused, so
+  cert-manager / service-ca certificates cannot be plugged in.
+
+Trust / Tenancy Notes:
+- Adapter→base-model mappings come from ConfigMaps labelled
+  inference.llm-d.ai/ipp-managed=true; filter is application-side, so anyone
+  able to label a ConfigMap in a watched namespace can influence routing.
+- multiNamespace: true caches all ConfigMaps cluster-wide.
+
+FIPS:
+- Static binary, CGO_ENABLED=0, no strictfipsruntime, no OpenSSL in image
+  → fails check-payload; downstream build must provide FIPS packaging.

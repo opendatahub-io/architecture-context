@@ -1,0 +1,127 @@
+llm-d-async (Async Processor) - Security Network Diagram
+Source: architecture/rhoai-3.7-ea.1/llm-d-async.md (commit cbce4a0, chart/appVersion 0.7.0)
+
+NOTE: This component is PULL-BASED. It has no request API, no Kubernetes Service,
+no Route/Ingress and no NetworkPolicy. Nearly all of its traffic is OUTBOUND. Anyone
+who can write to the broker queues can effectively submit inference work.
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  PRODUCERS (Trust = broker write access)                                    │
+│                                                                             │
+│  [batch-gateway / batch jobs / workflows]  (producer, producer-sql libs)    │
+│         │                                                                   │
+│         │ Port: 6379/TCP (Redis) | 5432/TCP (Postgres) | 443/TCP (Pub/Sub)  │
+│         │ Protocol: RESP | Postgres wire | gRPC                             │
+│         │ Encryption: Optional TLS (rediss://) | sslmode | TLS              │
+│         │ Auth: Redis password/ACL | Postgres role | GCP IAM                │
+│         ▼                                                                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  MESSAGE BROKERS (External / stateful - durable state lives here)          │
+│                                                                             │
+│  [Redis / Valkey]   6379/TCP RESP, optional TLS, password in URL            │
+│     - Sorted sets (deadline/priority), claim leases (300s TTL), quotas      │
+│  [PostgreSQL]       5432/TCP, TLS per sslmode, password in URL              │
+│     - async_requests, async_partitions, async_dispatchers, async_results,   │
+│       quota tables; schema migrations auto-applied at processor startup     │
+│  [GCP Pub/Sub]      pubsub.googleapis.com 443/TCP gRPC, TLS, ADC            │
+│         ▲                                                                   │
+│         │ Processor PULLS (poll/claim/lease) and WRITES results             │
+│         │ Auth: REDIS_URL / SQL_URL (env from Secret) | GCP ADC             │
+│         │                                                                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  OPENSHIFT CLUSTER - Helm release namespace (no NetworkPolicy)              │
+│                                                                             │
+│  [llm-d-async pod]  Deployment, replicas: 1, no leader election             │
+│  - ServiceAccount: {{fullname}}                                             │
+│  - Image: ghcr.io/llm-d/llm-d-async:0.7.0 (distroless/static, CGO=0)        │
+│  - securityContext: restricted                                              │
+│  - terminationGracePeriodSeconds: 130 (drain-timeout 2m)                    │
+│                                                                             │
+│  Listening ports (container ports only, no Service):                        │
+│   ├─ 8081/TCP HTTP  /healthz, /readyz   Encryption: None   Auth: None       │
+│   │     ▲ kubelet probes                                                    │
+│   └─ 9090/TCP HTTP  /metrics            Encryption: None                    │
+│         ▲ Prometheus PodMonitor                                             │
+│           Auth: NONE in Helm default (ap.metrics.secure: false)             │
+│                 Bearer -> TokenReview + SAR if --metrics-endpoint-auth=true │
+│                                                                             │
+│         │ (outbound dispatch)                                               │
+│         │ Port: per igw_base_url (e.g. 80/TCP)                              │
+│         │ Protocol: HTTP or HTTPS, POST /v1/completions (etc.)              │
+│         │ Encryption: None, or TLS 1.2+ (MinVersion TLS1.2, system pool +   │
+│         │             optional CA from /etc/tls)                            │
+│         │ Auth: Optional mTLS client cert; NO bearer token injected         │
+│         │ Headers: x-llm-d-inference-fairness-id, x-llm-d-inference-objective│
+│         ▼                                                                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  OPENSHIFT CLUSTER - llm-d serving stack                                    │
+│                                                                             │
+│  [Inference Gateway: llm-d-router (Envoy) + EPP]                            │
+│  - Flow control on fairness/objective headers                               │
+│  - Returns 429 / Retry-After / x-llm-d-request-dropped-reason for shedding  │
+│         │                                                                   │
+│         │ Port: 8000/TCP (typical)  Protocol: HTTP                          │
+│         │ Encryption/Auth: gateway-defined                                  │
+│         ▼                                                                   │
+│  [vLLM inference pool]                                                      │
+│                                                                             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  PLATFORM / OBSERVABILITY EGRESS (from llm-d-async)                         │
+│                                                                             │
+│  -> Prometheus API       per --prometheus-url, HTTP/HTTPS, Auth: none       │
+│                          (PromQL for budget/saturation gates, cached TTL)   │
+│  -> EPP / model-server   per gate params, HTTP, Auth: none (metric scrape)  │
+│     metrics endpoints                                                       │
+│  -> Kubernetes API       6443/TCP HTTPS TLS 1.2+, Auth: SA token            │
+│                          (REST config always loaded at startup;             │
+│                           TokenReview/SAR when metrics auth enabled)        │
+│  -> OTLP collector       4317/TCP gRPC, Encryption: NONE (insecure default) │
+│                          Auth: none                                         │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+Retry / Deadline Path:
+- 429 / 5xx / dropped-reason / transient transport error from gateway
+  -> re-enqueue to broker with exponential backoff while deadline not passed
+  -> write DEADLINE_EXCEEDED error result once the deadline has passed
+- Queue gates: Refuse (nack to broker) | Drop (error result)
+- Pool gates:  additionally Wait (park worker up to --gate-wait-timeout, default 5m)
+
+RBAC Summary:
+- ServiceAccount: {{fullname}} (chart-created, optional imagePullSecrets)
+- ClusterRoles / Roles: NONE shipped
+- RoleBindings: NONE shipped
+- If --metrics-endpoint-auth=true, grant outside the chart:
+  - API Groups: authentication.k8s.io   Resources: tokenreviews          Verbs: create
+  - API Groups: authorization.k8s.io    Resources: subjectaccessreviews  Verbs: create
+
+Service Mesh Configuration:
+- None defined by this component (no PeerAuthentication / AuthorizationPolicy)
+- No NetworkPolicy shipped: 8081 and 9090 are reachable by anything on the pod network
+
+Secrets:
+- {{fullname}} connection secret (Opaque, key `url`) - Redis/Valkey or Postgres URL
+  with credentials, injected as REDIS_URL / SQL_URL. Chart-created or existing Secret.
+  No auto-rotation. WARNING: an inline `url` in transportConfig ends up in pod args
+  (visible via `kubectl get pod`).
+- ap.tls.secretName (user-defined PEM) - CA bundle + client cert/key for TLS/mTLS
+  to the inference gateway, mounted at /etc/tls. Manual or cert-manager.
+  Read once at startup (no hot reload).
+- GCP credentials (ADC: env / workload identity) - Pub/Sub auth. Platform-managed.
+
+Multi-Tenancy:
+- Tenant boundary is logical only (message attribute, default `userid`)
+- Tenant identity is written by the producer and NOT verified by the processor
+- All tenants on a release share broker credentials; isolation relies on queue
+  naming, broker ACLs, quota gates, and gateway (EPP) fair-share flow control
+
+Security Risks / Observations:
+1. /metrics served unauthenticated over plain HTTP in Helm default.
+2. OTLP trace export is plaintext gRPC by default (ap.otel.insecure: true).
+3. --tls-insecure-skip-verify disables gateway certificate validation (dev/test).
+4. Broker write access = ability to drive inference requests to configured gateways
+   (gateway URLs come from operator-controlled transport config, not from messages,
+   which limits SSRF; gcs_uri_multipart passes signed URLs through without fetching).
+5. Upstream image: CGO_ENABLED=0 static on distroless/static, so it would fail the
+   Konflux check-payload FIPS gate. The downstream RHOAI build needs its own Dockerfile.
+6. Postgres schema migrations run automatically at startup with SQL_URL credentials
+   (the role needs DDL rights).

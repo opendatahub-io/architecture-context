@@ -1,0 +1,78 @@
+guardrails-regex-detector — Security Network Diagram (RHOAI 3.7 EA1)
+Source: architecture/rhoai-3.7-ea.1/guardrails-regex-detector.md  (branch rhoai-3.7-ea.1 @ 5c61167)
+
+NOTE: The repo has no Kubernetes manifests. The namespace, Service, NetworkPolicy and
+      ServiceAccount below are whatever the deployer defines. No deployment reference
+      to this image was found in the RHOAI 3.7 EA1 workspace.
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│  CLUSTER INTERNAL (expected exposure — set by deployer)                 │
+│                                                                         │
+│  [FMS Guardrails Orchestrator]          [kubelet / probe]               │
+│         │                                      │                        │
+│         │ Port: 8080/TCP                       │ Port: 8080/TCP         │
+│         │ Protocol: HTTP                       │ Protocol: HTTP         │
+│         │ Encryption: None (plaintext)         │ Encryption: None       │
+│         │ Auth: None                           │ Auth: None             │
+│         │ POST /api/v1/text/contents           │ GET /health            │
+│         ▼                                      ▼                        │
+├─────────────────────────────────────────────────────────────────────────┤
+│  COMPONENT                                                              │
+│                                                                         │
+│  [regex-detector container]                                             │
+│  - Image: regex-detector-release (UBI 9 minimal :latest)                │
+│  - Entrypoint: /app/bin/regex-detector                                  │
+│  - Listener: HOST:HTTP_PORT, default 0.0.0.0:8080/TCP                   │
+│  - TLS: none (tokio::net::TcpListener + axum::serve)                    │
+│  - AuthN/AuthZ: none in application                                     │
+│  - Image runs with no USER directive (container user set by platform)   │
+│  - Stateless: no persistence, no K8s API access                         │
+│         │                                                               │
+│         │ stdout (INFO): full request payload — PII under inspection    │
+│         ▼                                                               │
+│  [Container logs / log aggregation]                                     │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EGRESS                                                                 │
+│                                                                         │
+│  None — the service makes no outbound connections.                      │
+└─────────────────────────────────────────────────────────────────────────┘
+
+Endpoints:
+- POST /api/v1/text/contents  8080/TCP  HTTP  Encryption: none  Auth: none
+    Body: {contents: [str], detector_params: {regex: [str]}}
+    Returns: [[{start, end, text, detection_type, detection, score: 1.0}]]
+    Errors: 400 "empty regex" only; invalid custom regex -> warn! log, still 200
+- GET  /health                8080/TCP  HTTP  Encryption: none  Auth: none  -> "healthy"
+
+RBAC Summary:
+- No ClusterRoles, Roles, RoleBindings or ServiceAccounts defined.
+- No Kubernetes API access required.
+
+Service Mesh / Network Policy:
+- None defined in repo. Transport security and caller restriction must come from
+  the deployment (localhost sidecar of the orchestrator, NetworkPolicy, or mesh mTLS).
+
+Secrets:
+- None consumed. Configuration is env-only: HTTP_PORT (default 8080), HOST (default 0.0.0.0).
+
+Crypto / FIPS:
+- No TLS library; Cargo.lock has no openssl, rustls or ring.
+- compat-openssl11 (OpenSSL 1.1) installed in runtime image but not linked by the binary.
+- Builder image is Docker Hub rust:1.84.0 (Debian), not UBI.
+- No OLM FIPS annotation (no CSV/manifests).
+
+Build Hermeticity:
+- Cargo.lock present but NOT copied into the builder; cargo install runs without --locked.
+- No rpms.lock.yaml, artifacts.lock.yaml, or Hermeto prefetch.
+- Mutable base image tags: rust:1.84.0, ubi9/ubi-minimal:latest.
+
+Security Observations:
+1. Sensitive data in logs: full payload (SSNs, card numbers, emails) logged at INFO
+   (src/detectors.rs:100). Leftover println!("hi") at src/detectors.rs:99.
+2. Unauthenticated, plaintext endpoint: any client that can reach 8080/TCP can submit text.
+3. Untrusted regex input: the regex crate is linear-time (no catastrophic backtracking),
+   but there is no body-size limit beyond Axum's default, no pattern-size limit and no
+   timeout. Patterns are compiled per request, so CPU/memory use is unbounded.
+4. Silent errors: built-in detector errors dropped; invalid custom regex ignored with 200.
+5. Response shape: detections flattened into one nested array and not grouped per input,
+   which differs from the orchestrator's per-content list-of-lists contract.

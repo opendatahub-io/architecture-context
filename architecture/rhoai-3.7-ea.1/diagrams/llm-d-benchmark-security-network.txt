@@ -1,0 +1,176 @@
+llm-d-benchmark - Security Network Diagram (SAR)
+Source: architecture/rhoai-3.7-ea.1/llm-d-benchmark.md
+Commit: c8faa9b23265ea7526ccd98977b91e18080ee403 (main)  |  Generated: 2026-11-10
+
+Nature of component: client-side orchestrator (CLI) + ephemeral in-cluster benchmark pods.
+No operator, no CRDs, no webhooks, no HTTP/gRPC servers. Only in-cluster listener: rsync 20873/TCP.
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  CLIENT ZONE (Operator workstation / CI runner - outside cluster)           │
+│                                                                              │
+│  [llmdbenchmark CLI]   [llm_d_stack_discovery CLI (optional)]                │
+│  - Auth: kubeconfig (client cert / token / exec plugin)                      │
+│          or --cluster-url + token                                            │
+│  - Renders manifests to local workspace (HF token may be plaintext           │
+│    stringData on disk)                                                       │
+│  - Client cert/key written to NamedTemporaryFile(delete=False), not removed │
+│         │                                                                    │
+│         │ Port: 6443/TCP (or 443)                                            │
+│         │ Protocol: HTTPS (kubectl/oc/helm subprocess + Python client)       │
+│         │ Encryption: TLS - VERIFICATION DISABLED for token login            │
+│         │   (verify_ssl=False, oc login --insecure-skip-tls-verify=true)     │
+│         │ Auth: kubeconfig / Bearer token                                    │
+│         │ Also: kubectl cp -> exec on data-access pod (HTTPS/SPDY)           │
+│         ▼                                                                    │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  CLUSTER CONTROL PLANE                                                       │
+│                                                                              │
+│  [kube-apiserver]  6443/TCP HTTPS, RBAC enforcement                          │
+│  - CLI user must be namespace admin (infra pre-installed) or cluster admin   │
+│         │                                                                    │
+│         │ creates Namespaces, SA, Roles/Bindings, Secrets, PVCs,             │
+│         │ ConfigMaps, Pods, Jobs, HTTPRoutes, helm releases                  │
+│         ▼                                                                    │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  CLUSTER WORKLOADS (no NetworkPolicies rendered - reachable cluster-wide)    │
+│                                                                              │
+│  ┌─ Namespace: harness (PSA labels audit/warn: privileged) ───────────────┐  │
+│  │ [Harness Pod(s)]  image ghcr.io/llm-d/llm-d-benchmark:nightly          │  │
+│  │ - ServiceAccount: {{ serviceAccount.name }}                            │  │
+│  │ - SCC: restricted (harness.privileged=true optional, default false)    │  │
+│  │ - Listeners: none                                                      │  │
+│  │ - Optional "report" sidecar (same image)                               │  │
+│  │ - Optional LLMDBENCH_BASE64_CONTEXT_CONTENTS -> ~/.kube/config         │  │
+│  │                                                                        │  │
+│  │ [Data-access Pod]  + Service (ClusterIP)                               │  │
+│  │ - Port: 20873/TCP  Protocol: rsync                                     │  │
+│  │ - Encryption: NONE   Auth: NONE (read-only module [requests])          │  │
+│  │ - Any pod reaching the Service can read /requests results              │  │
+│  │                                                                        │  │
+│  │ [Workload PVC] mounted at /requests (harness writes, data-access reads)│  │
+│  └────────────────────────────────────────────────────────────────────────┘  │
+│         │                                                                    │
+│         │ Port: scenario-defined (80 / 8000 / 443)                           │
+│         │ Protocol: HTTP(S), OpenAI-compatible API                           │
+│         │ Encryption: scenario-dependent (in-cluster vLLM: none)             │
+│         │ Auth: none or Bearer (scenario-dependent)                          │
+│         │                                                                    │
+│         │ + EPP /metrics: HTTPS, TLS, Bearer from                            │
+│         │   inference-gateway-sa-metrics-reader-secret                       │
+│         │ + Smoke test: ephemeral curl pod, curl -sk (no verify) /v1/models  │
+│         ▼                                                                    │
+│  ┌─ Namespace: model (SYSTEM UNDER TEST) ─────────────────────────────────┐  │
+│  │ [Gateway / HTTPRoute] (Istio / agentgateway) listener: Gateway-defined │  │
+│  │        │                                                               │  │
+│  │ [GAIE EPP / InferencePool]                                             │  │
+│  │        │ HTTP/8000 (typical), no TLS in-cluster                        │  │
+│  │ [vLLM decode/prefill pods]                                             │  │
+│  │ - preprocess script PATCHes own pod labels -> kube-apiserver 443/TCP   │  │
+│  │   TLS: SA CA, falls back to ssl.CERT_NONE if kubeconfig has no CA      │  │
+│  │   Auth: kubeconfig creds or projected SA token                         │  │
+│  │ [Model Download Job/DaemonSet] -> huggingface.co (HF_TOKEN)            │  │
+│  │ [Model PVC]                                                            │  │
+│  └────────────────────────────────────────────────────────────────────────┘  │
+│                                                                              │
+│  ┌─ Namespace: openshift-monitoring ──────────────────────────────────────┐  │
+│  │ [Thanos Querier] 443/TCP HTTPS <- CLI via curl -k (no verify), Bearer  │  │
+│  └────────────────────────────────────────────────────────────────────────┘  │
+│                                                                              │
+│  [llm-d-stack-discovery Job] (optional)                                      │
+│  - SA: default/llm-d-stack-discovery, UID 1000 non-root                      │
+│  - Cluster-wide read-only ClusterRole -> kube-apiserver 443/TCP              │
+│         │                                                                    │
+│         ▼                                                                    │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES (Internet egress)                                         │
+│                                                                              │
+│  Destination                      Port     Encryption        Auth            │
+│  huggingface.co                   443/TCP  TLS 1.2+          HF_TOKEN        │
+│  Google Cloud Storage             443/TCP  TLS 1.2+          Google ADC      │
+│  prism.llm-d.ai (GCS proxy, dflt) 443/TCP  TLS               None in client  │
+│  Amazon S3                        443/TCP  TLS 1.2+          AWS credentials │
+│  Telemetry receiver (optional)    443/TCP  TLS (verify on)   Bearer OIDC     │
+│  Helm repos / registries / GitHub 443/TCP  TLS               None/pull secret│
+│  Build-time: mirror.openshift.com, packages.cloud.google.com,                │
+│    awscli.amazonaws.com, github.com, download.pytorch.org, PyPI              │
+│                                   443/TCP  TLS               None            │
+│    (unpinned, no checksum verification)                                      │
+│                                                                              │
+│  NOTE: Prism default egress to llm-d-operated infra matters for             │
+│        disconnected / regulated RHOAI environments.                          │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+Unused scaffolding (util/deploy, not referenced by code):
+- ${PROJECT_NAME}-service  ClusterIP 8080/TCP, no TLS/auth; selector does not
+  match StatefulSet pod label
+- ${PROJECT_NAME}-route    OpenShift Route 443/TCP HTTPS, edge TLS
+- ${PROJECT_NAME}-exec-rolebinding grants pods/exec to Group system:authenticated
+
+RBAC Summary:
+- Role: inference-perf-job-creator (harness/model ns)
+  - batch jobs: create, get, list, watch, delete, patch, update
+  - core serviceaccounts: get
+  - core pods: get, list, watch;  pods/log: get
+  - core services: get, list
+  - core secrets (resourceName inference-gateway-sa-metrics-reader-secret): get
+  - apps deployments: get, patch                  (FMA only)
+  - fma.llm-d.ai inferenceserverconfigs: get      (FMA only)
+  - Bound to: {{ serviceAccount.name }} via inference-perf-job-creator-binding
+- ClusterRole: system:openshift:scc:restricted
+  - Bound to: {{ serviceAccount.name }} via inference-perf-restricted-scc
+- Role: {{ model_id_label }}-pod-self-labeler (model ns)
+  - core pods: get, patch
+  - Bound to: {{ model_id_label }} (modelservice SA)
+- ClusterRole: llm-d-stack-discovery (read-only, cluster-wide)
+  - core pods, services, configmaps, nodes: get, list
+  - apps deployments, statefulsets, replicasets: get, list
+  - route.openshift.io routes: get, list
+  - security.openshift.io securitycontextconstraints: get, list
+  - config.openshift.io clusterversions: get
+  - gateway.networking.k8s.io gateways, httproutes, gatewayclasses: get, list
+  - inference.networking.x-k8s.io inferencepools, inferencemodels: get, list
+  - Bound to: default/llm-d-stack-discovery (ClusterRoleBinding)
+- Role: ${PROJECT_NAME}-exec-role (UNUSED scaffolding)
+  - core pods/exec (resourceName ${PROJECT_NAME}-0-0): create
+  - Bound to: Group system:authenticated  <-- any authenticated user
+- Additional Prometheus/KEDA/FMA-launcher RBAC rendered by
+  22_prometheus-rbac.yaml.j2 and 25_fma-launcher-rbac.yaml.j2; teardown step 04
+  removes cluster-scoped ClusterRoles/Bindings created for modelservice.
+
+Service Mesh Configuration:
+- None defined by this component. Gateway / Istio / agentgateway belong to the
+  system under test; harness-to-endpoint encryption is scenario-dependent.
+- No NetworkPolicies, ResourceQuota or LimitRange rendered.
+
+Secrets:
+- {{ huggingface.secretName }} (Opaque) - HF token; created at standup from
+  HF_TOKEN / LLMDBENCH_HF_TOKEN / HUGGING_FACE_HUB_TOKEN; no rotation;
+  may be rendered as plaintext stringData in workspace manifests
+- inference-gateway-sa-metrics-reader-secret (SA token) - EPP /metrics Bearer;
+  provisioned by GAIE / router chart; consumed only
+- vllmCommon.pullSecret (kubernetes.io/dockerconfigjson) - user-provided
+- KEDA TriggerAuthentication secrets (Opaque/token) - Prometheus auth for KEDA
+- LLMDBENCH_TELEMETRY_TOKEN (env) - short-lived Google OIDC ID token
+- LLMDBENCH_BASE64_CONTEXT_CONTENTS (env) - base64 kubeconfig injected into the
+  harness container
+
+TLS / Crypto Posture:
+- Python ssl / urllib3 / requests defaults; no min-version or cipher config
+- Verification disabled: verify_ssl=False, --insecure-skip-tls-verify=true,
+  curl -k / -sk, ssl.CERT_NONE fallback
+- SHA-256 used only for naming/IDs (non-security)
+
+FIPS / Supply Chain:
+- Harness image base: docker.io/library/python:3.13.5-slim-bookworm (Debian
+  OpenSSL, not FIPS-validated); s390x variant on ubi9/ubi-minimal:9.6
+- No Konflux Dockerfile, no .tekton pipelines, no hermetic lock files
+- Images published to ghcr.io/llm-d by GitHub Actions
+- Build-time downloads (oc, gcloud plugin, AWS CLI, git clones, CPU torch)
+  without checksum verification
+
+Multi-Tenancy:
+- Tenant boundary: per-namespace (model ns + harness ns per stack);
+  single-tenant, per-user ephemeral; teardown removes resources
+- Gaps: unauthenticated rsync results exposure, no NetworkPolicies, PSA
+  audit/warn privileged, cluster-admin needed for shared infra standup,
+  shared GCS/Prism credentials with path-prefix isolation only

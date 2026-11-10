@@ -1,0 +1,147 @@
+MCP LIFECYCLE OPERATOR - SECURITY NETWORK DIAGRAM (RHOAI 3.7-ea.1)
+Source: architecture/rhoai-3.7-ea.1/mcp-lifecycle-operator.md
+Image: quay.io/rhoai/odh-mcp-lifecycle-operator-rhel9 (3.7.0-ea.1, commit 0c9c97f)
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                        │
+│                                                                              │
+│  [External MCP Client]                       [User / GitOps]                 │
+│         │                                           │                        │
+│         │ Port: Gateway listener                    │ Port: 6443/TCP         │
+│         │ Protocol: HTTP/HTTPS (MCP)                │ Protocol: HTTPS        │
+│         │ Encryption: Gateway-defined               │ Encryption: TLS 1.2+   │
+│         │ Auth: Gateway / MCP server-defined        │ Auth: User token, RBAC │
+│         ▼                                           ▼                        │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (pre-existing Gateway - NOT created by this operator)               │
+│                                                                              │
+│  [Gateway API Gateway or Kuadrant MCP Gateway]                               │
+│  - Named in tenant binding ConfigMap (spec.gateway.configRef)                │
+│    keys: gateway-name, gateway-namespace, route-hostname, public-hostname    │
+│  - Routes: per-MCPServer HTTPRoute (httproute provider)                      │
+│            or MCPServerRegistration (kuadrant provider)                      │
+│  - TLS mode / auth: determined by parent Gateway listener                    │
+│  - No OpenShift Route, Envoy, EnvoyFilter or kube-rbac-proxy created         │
+│         │                                                                    │
+│         │ Port: spec.config.port   Protocol: HTTP/HTTPS (server-defined)     │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  KUBERNETES CONTROL PLANE                                                    │
+│                                                                              │
+│  [Kubernetes API Server] 6443/TCP HTTPS TLS 1.2+                             │
+│         │                                                                    │
+│         │ Port: 443/TCP (Service) → 9443/TCP (pod)                           │
+│         │ Protocol: HTTPS                                                    │
+│         │ Encryption: TLS (mcplo-webhook-server-cert)                        │
+│         │ Auth: kube-apiserver admission / CRD conversion                    │
+│         │ Paths: /validate-mcp-x-k8s-io-v1alpha1-mcpserver (failurePolicy    │
+│         │        Fail, CREATE/UPDATE), /convert (v1alpha1 <-> v1beta1)       │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  OPERATOR NAMESPACE: mcp-lifecycle-operator-system                           │
+│                                                                              │
+│  [mcp-lifecycle-operator-controller-manager]                                 │
+│  - ServiceAccount: mcp-lifecycle-operator-controller-manager                 │
+│  - 1 replica, leader election ID bed7462b.x-k8s.io                           │
+│  - UID 65532, restricted securityContext, GOMEMLIMIT 460MiB                  │
+│  - FIPS: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1, OpenSSL, DEFAULT:PQ  │
+│  - Listeners:                                                                │
+│      9443/TCP HTTPS  webhooks       (TLS; HTTP/2 disabled)                   │
+│      8443/TCP HTTPS  /metrics       (TLS; Bearer → TokenReview + SAR)        │
+│      8081/TCP HTTP   /healthz,/readyz (no auth, by design)                   │
+│  - NetworkPolicy (ODH overlay): metrics ingress only from                    │
+│    openshift-monitoring / openshift-user-workload-monitoring;                │
+│    allow-all egress (stopgap, ODH-ADR-Operator-0016)                         │
+│         │                                     ▲                              │
+│         │ EGRESS                              │ Port: 8443/TCP HTTPS, TLS    │
+│         │                                     │ Auth: Bearer token           │
+│         │                                     │ [Prometheus - openshift-     │
+│         │                                     │  monitoring / user-workload] │
+│         │                                                                    │
+│         ├──► Kubernetes API Server                                           │
+│         │      Port: 6443/TCP   Protocol: HTTPS   Encryption: TLS 1.2+       │
+│         │      Auth: ServiceAccount token (manager-role ClusterRole)         │
+│         │                                                                    │
+│         └──► MCP server Services (<svc>.<ns>.svc.<cluster-domain>)           │
+│                Port: spec.config.port                                        │
+│                Protocol: HTTP or HTTPS (MCP streamable HTTP, initialize)     │
+│                Encryption: none | TLS (system trust / caBundleSecret) |      │
+│                            TLS with insecureSkipVerify (warning only)        │
+│                Auth: none; 401/403 → Verified with reason AuthSkipped        │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  TENANT NAMESPACE(S) (one per MCPServer owner)                               │
+│                                                                              │
+│  [<mcpserver> Service] ClusterIP, spec.config.port, port name "mcp"          │
+│  [<mcpserver> Deployment] managed mode  - or -  BYO workloadRef/serviceRef   │
+│  [<mcpserver> NetworkPolicy]                                                 │
+│  - Posture: open (default, startup warning) | restricted                     │
+│  - restricted must admit operator pod labels + gateway peers, else the       │
+│    handshake fails and the server never becomes Ready                        │
+│  - Optional ingressFrom / egressTo / dnsEgressPeer                           │
+│  - Optional TLS env injection (PROPAGATE_TLS_ENV_VARS=true)                  │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- ClusterRole: mcp-lifecycle-operator-manager-role
+  (bound cluster-wide via mcp-lifecycle-operator-manager-rolebinding)
+  - core: configmaps, namespaces, pods, secrets        get, list, watch
+  - core: services                                     create, delete, get, list, update, watch
+  - events.k8s.io: events                              create, patch
+  - apiextensions.k8s.io: customresourcedefinitions    get, list, watch
+  - apps: daemonsets, statefulsets                     get, list, watch
+  - apps: deployments                                  create, get, list, update, watch
+  - gateway.networking.k8s.io: gateways                get, list, watch
+  - gateway.networking.k8s.io: httproutes              create, delete, get, list, update, watch
+  - mcp.kuadrant.io: mcpgatewayextensions              get, list, watch
+  - mcp.kuadrant.io: mcpserverregistrations            create, delete, get, list, update, watch
+  - mcp.x-k8s.io: mcpgatewaybindings                   create, delete, get, list, patch, update, watch
+  - mcp.x-k8s.io: mcpservers                           get, list, patch, update, watch
+  - mcp.x-k8s.io: */status                             get, patch, update
+  - mcp.x-k8s.io: */finalizers                         update
+  - networking.k8s.io: networkpolicies                 create, get, list, update, watch
+- ClusterRole: mcp-lifecycle-operator-metrics-auth-role (ClusterRoleBinding)
+  - authentication.k8s.io tokenreviews: create
+  - authorization.k8s.io subjectaccessreviews: create
+- ClusterRole: mcp-lifecycle-operator-metrics-reader
+  - nonResourceURL /metrics: get
+- Role: mcp-lifecycle-operator-leader-election-role (ns mcp-lifecycle-operator-system)
+  - configmaps, coordination.k8s.io leases: full CRUD; events: create, patch
+- Aggregated user roles: mcpserver-admin-role (aggregate-to-admin),
+  mcpserver-editor-role (aggregate-to-edit), mcpserver-viewer-role (aggregate-to-view)
+
+Admission Control:
+- Validating webhook vmcpserver.mcp.x-k8s.io (v1alpha1, matchPolicy Equivalent)
+  - Registered only with --enable-webhook (set in kustomize default)
+  - Rules: image allowlist, digest pinning, max storage mounts, required labels,
+    privileged securityContext rejection (only the last is on by default)
+  - Cluster-wide policy; failurePolicy Fail blocks MCPServer writes when operator is down
+- Conversion webhook /convert: always registered
+- No mutating webhook
+
+Service Mesh Configuration:
+- None. No PeerAuthentication / AuthorizationPolicy; isolation via NetworkPolicy.
+
+Secrets:
+- mcplo-webhook-server-cert (kubernetes.io/tls) - webhook TLS; cert-manager self-signed
+  Issuer (upstream default); auto-renewed, reloaded by cert watcher
+- mcplo-metrics-server-cert (kubernetes.io/tls) - metrics TLS; cert-manager self-signed
+  Issuer; auto-renewed, reloaded by cert watcher
+- spec.transport.tls.caBundleSecret (Opaque, user) - CA for handshake; hash tracked,
+  change triggers re-verification
+- imagePullSecrets / storage-mounted / envFrom Secrets (user) - passed through to MCP pods
+
+TLS Profile:
+- TLS_MIN_VERSION / TLS_CIPHER_SUITES / TLS_GROUPS env (Go defaults if unset)
+- Applied to webhook + metrics servers and handshake clients (with floor)
+- HTTP/2 disabled unless --enable-http2
+
+Security Risks / Observations:
+1. insecureSkipVerify on spec.transport.tls honored (warning event + log only)
+2. Base ServiceMonitor uses insecureSkipVerify: true (ODH overlay injects serverName only)
+3. Manager SA reads Secrets/ConfigMaps cluster-wide (get, list, watch)
+4. Gateway / Kuadrant namespace allowlists empty by default → cross-tenant route
+   attachment possible
+5. Default NetworkPolicy posture "open" leaves operand ingress unrestricted
+6. parseCipherSuites accepts tls.InsecureCipherSuites() names
+7. Operator egress is allow-all in the ODH overlay (stopgap)

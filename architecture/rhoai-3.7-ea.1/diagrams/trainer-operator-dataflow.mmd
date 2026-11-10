@@ -1,0 +1,54 @@
+sequenceDiagram
+    autonumber
+    participant RHODS as rhods-operator
+    participant API as Kubernetes API<br/>6443/TCP HTTPS TLS1.2+
+    participant TO as trainer-operator<br/>metrics 8443/TCP HTTPS
+    participant FS as emptyDir<br/>/opt/manifests-work
+    participant OP as kubeflow-trainer-controller-manager<br/>9443 / 8443 / 10443
+    participant Prom as Prometheus
+    participant User as User / Dashboard / SDK
+    participant Pods as Training pods
+
+    rect rgb(230, 240, 255)
+    Note over RHODS,OP: Flow 1 - Trainer CR reconciliation
+    RHODS->>API: Create Trainer default-trainer<br/>SA token, TLS 1.2+
+    TO->>API: Watch Trainer, Deployments, Services,<br/>ConfigMaps, VWCs, JobSetOperator (HTTPS/WSS)
+    TO->>API: Check OLM jobset-operator, JobSetOperator cluster,<br/>jobsets CRD established
+    alt JobSet missing or degraded
+        API-->>TO: Not ready
+        TO->>API: Trainer status Degraded=True (requeue)
+    else Prerequisites OK
+        TO->>API: Get/create Namespace (uncached)<br/>Get ConfigMap odh-trainer-config (uncached)
+        TO->>FS: Substitute RELATED_IMAGE_* in params.env,<br/>render kustomize rhoai overlay, inject TLS profile
+        FS-->>TO: Rendered manifests
+        TO->>API: SSA apply (field owner trainer-module-controller)<br/>CRDs, RBAC, Deployment, Service, webhooks,<br/>NetworkPolicies, ServiceMonitor, 16 runtimes, ImageStreams
+        API-->>OP: Operand Deployment rolled out
+        TO->>API: Update status conditions + releases, GC stale resources
+    end
+    end
+
+    rect rgb(240, 255, 240)
+    Note over API,TO: Flow 2 - TLS profile propagation
+    TO->>API: Get apiservers.config.openshift.io/cluster (startup)
+    TO->>API: Write tls section to kubeflow-trainer-config<br/>+ config hash on operand pod template
+    API-->>TO: APIServer profile change event
+    TO->>TO: Watcher cancels manager context, pod restarts, re-resolves
+    end
+
+    rect rgb(255, 245, 230)
+    Note over Prom,OP: Flow 3 - Metrics scrape
+    Prom->>TO: GET /metrics 8443/TCP HTTPS (service-ca)<br/>Bearer token
+    TO->>API: TokenReview + SubjectAccessReview
+    TO-->>Prom: Metrics
+    Prom->>OP: GET /metrics 8443/TCP HTTPS<br/>Bearer token (prometheus-k8s, trainer-metrics-reader)
+    OP-->>Prom: Metrics
+    end
+
+    rect rgb(250, 235, 250)
+    Note over User,Pods: Flow 4 - User TrainJob (operand data path)
+    User->>API: Create TrainJob 6443/TCP HTTPS<br/>User bearer token
+    API->>OP: Admission webhook 443 to 9443/TCP HTTPS<br/>failurePolicy Fail
+    OP-->>API: Defaulted / validated
+    OP->>API: Create JobSet from ClusterTrainingRuntime<br/>SA kubeflow-trainer-controller-manager
+    Pods->>OP: Status updates 10443/TCP HTTPS<br/>(auth not-extracted)
+    end

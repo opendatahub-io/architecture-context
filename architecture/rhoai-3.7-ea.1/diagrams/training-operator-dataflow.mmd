@@ -1,0 +1,35 @@
+sequenceDiagram
+    autonumber
+    participant User as User / Workbench<br/>(SDK, oc)
+    participant API as kube-apiserver<br/>6443/TCP HTTPS
+    participant WH as Webhook Server<br/>Svc 443 → pod 9443/TCP HTTPS
+    participant Op as training-operator<br/>Manager + reconcilers
+    participant Init as PyTorch init container<br/>(nslookup)
+    participant Workers as Job Pods<br/>master / workers
+    participant Launcher as MPI Launcher<br/>(kubectl)
+    participant Prom as Prometheus<br/>(PodMonitor)
+
+    Note over Op,API: Flow 4 - Startup TLS profile and cert bootstrap
+    Op->>API: GET apiservers.config.openshift.io/cluster<br/>HTTPS 6443, TLS 1.2+, SA token
+    API-->>Op: tlsSecurityProfile (fallback TLS 1.2 Intermediate)
+    Op->>API: Update Secret kubeflow-training-operator-webhook-cert<br/>+ patch VWC caBundle (cert-controller)
+    Note over Op: certsReady → start controllers, readiness passes
+
+    Note over User,WH: Flow 1 - Job submission and admission
+    User->>API: Create PyTorchJob / TFJob / ...<br/>HTTPS 6443, TLS 1.2+, Bearer token (RBAC training-edit)
+    API->>WH: POST /validate-kubeflow-org-v1-KIND<br/>HTTPS 443→9443, TLS cluster profile, caBundle verify
+    WH-->>API: AdmissionReview allowed / denied (failurePolicy Fail)
+    API-->>User: Job created (MPIJob: no validation)
+
+    Note over Op,Workers: Flow 2 - Job reconciliation
+    Op->>API: Watch job CRs + label-filtered Pods/Services<br/>HTTPS 6443, SA token
+    Op->>API: Create Pods, headless Services, HPA, NetworkPolicy (PyTorch),<br/>ConfigMap/SA/Role/RoleBinding (MPI), PodGroups
+    API-->>Workers: Pods scheduled in user namespace
+    Init->>Init: nslookup master Service<br/>53/UDP DNS, plaintext
+    Workers->>Workers: Rendezvous / NCCL / gloo / TF gRPC<br/>framework ports (e.g. 23456), TCP, no TLS
+    Launcher->>API: pods/exec on workers<br/>HTTPS/WSS 6443, launcher SA token
+    Op->>API: Update job status<br/>HTTPS 6443, SA token
+
+    Note over Prom,Op: Flow 3 - Metrics scraping
+    Prom->>Op: GET /metrics<br/>8080/TCP HTTP, no TLS, no auth
+    Op-->>Prom: Prometheus metrics

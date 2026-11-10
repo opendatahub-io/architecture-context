@@ -1,0 +1,96 @@
+graph TB
+    %% llm-d-batch-gateway-operator — security network diagram
+
+    subgraph External["EXTERNAL (Untrusted)"]
+        Client["API Client<br/>OpenAI-compatible Batch/Files"]
+        AdminUser["Namespace admin / editor<br/>kubectl / ai-gateway tooling"]
+    end
+
+    subgraph Ingress["INGRESS (Gateway API)"]
+        Gateway["Platform Gateway<br/>e.g. data-science gateway<br/>443/TCP HTTPS, TLS terminated<br/>Gateway-level auth e.g. MaaS"]
+        Route["HTTPRoute &lt;cr&gt;-apiserver<br/>optional, spec.httpRoute.enabled<br/>PathPrefix /v1/batches, /v1/files"]
+    end
+
+    subgraph ControlPlane["CONTROL PLANE"]
+        KAPI["Kubernetes API server<br/>6443/TCP HTTPS TLS 1.2+"]
+        OCPCfg["config.openshift.io/APIServer<br/>cluster TLS profile"]
+        ServiceCA["OpenShift service-ca"]
+    end
+
+    subgraph OpNS["Namespace: redhat-ods-applications (operator)"]
+        Operator["llm-d-batch-gateway-operator<br/>SA: llm-d-batch-gateway-operator<br/>ClusterRole: cluster-wide secrets get/list/watch/create/patch,<br/>roles/rolebindings CRUD<br/>non-root, RO rootfs, caps dropped"]
+        MetricsSvc["Service ...-operator-metrics<br/>8443/TCP HTTPS<br/>service-ca cert, cluster TLS profile<br/>Bearer: TokenReview + SAR"]
+        Probes["/healthz /readyz<br/>8081/TCP HTTP, no auth"]
+        NetPol["NetworkPolicy<br/>8443 ingress only from<br/>redhat-ods-monitoring, openshift-monitoring"]
+    end
+
+    subgraph MonNS["Namespaces: redhat-ods-monitoring / openshift-monitoring"]
+        Prom["Prometheus<br/>SA token + service-ca CA"]
+    end
+
+    subgraph TenantNS["Namespace: CR namespace (tenant) - NO operand NetworkPolicies"]
+        APISrv["&lt;cr&gt;-apiserver<br/>8000/TCP HTTP or HTTPS<br/>TLS if spec.tls.enabled<br/>8081/TCP observability<br/>auth NOT enforced, tenant headers"]
+        Proc["&lt;cr&gt;-processor StatefulSet<br/>metrics :9090 HTTP"]
+        GC["&lt;cr&gt;-gc<br/>metrics :9091 HTTP"]
+        Async["async-processor<br/>llm-d-async"]
+        Creds["Secret &lt;cr&gt;-credentials<br/>or local secretRef<br/>mounted at /etc/.secrets"]
+    end
+
+    subgraph SrcNS["Namespace: Secret source (optional)"]
+        SrcSecret["secretRef Secret"]
+        RG["ReferenceGrant<br/>LLMBatchGateway to Secret"]
+    end
+
+    subgraph ExtSvc["EXTERNAL / USER-PROVIDED SERVICES"]
+        PG[("PostgreSQL<br/>5432/TCP, TLS per URL")]
+        S3[("S3 endpoint<br/>443/TCP HTTPS, access key")]
+        Redis[("Redis / Valkey<br/>6379/TCP, rediss:// for TLS")]
+        IGW["Inference gateways / EPP<br/>HTTP/HTTPS, optional mTLS<br/>insecureSkipVerify possible"]
+        OTEL["OTEL collector<br/>OTLP, optional"]
+    end
+
+    %% Flows
+    AdminUser -->|HTTPS/6443<br/>TLS 1.2+<br/>User token + RBAC| KAPI
+    Client -->|HTTPS/443<br/>TLS<br/>Gateway auth| Gateway
+    Gateway --> Route
+    Route -->|HTTP or HTTPS/8000<br/>backend TLS if enabled<br/>tenant identity headers| APISrv
+
+    Operator -->|HTTPS/6443<br/>TLS 1.2+<br/>SA token: watch, SSA, status| KAPI
+    Operator -->|get/watch TLS profile| OCPCfg
+    ServiceCA -.->|issues metrics-tls cert| MetricsSvc
+    Prom -->|HTTPS/8443<br/>TLS service-ca<br/>Bearer SA token| MetricsSvc
+    MetricsSvc --> Operator
+    Operator -->|TokenReview + SAR<br/>HTTPS/6443| KAPI
+
+    Operator -.->|checks grant| RG
+    Operator -.->|reads + copies| SrcSecret
+    Operator -.->|SSA owned copy| Creds
+    Operator -.->|SSA operands| APISrv
+
+    APISrv -->|PostgreSQL/5432<br/>postgresql-url| PG
+    APISrv -->|HTTPS/443<br/>S3 keys| S3
+    Proc -->|PostgreSQL/5432| PG
+    Proc -->|Redis/6379<br/>redis-url| Redis
+    GC -->|PostgreSQL/5432| PG
+    Async -->|Redis/6379 or PG queue| Redis
+    Async -->|HTTP/HTTPS user-defined<br/>optional TLS/mTLS<br/>inference API key| IGW
+    Async -.->|OTLP| OTEL
+
+    %% Styling
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef control fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef operator fill:#4a90e2,stroke:#2a5a92,stroke-width:2px,color:#fff
+    classDef tenant fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef secret fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef risk fill:#f8cecc,stroke:#b85450,stroke-width:3px,stroke-dasharray:5 5
+
+    class Client,AdminUser external
+    class Gateway,Route ingress
+    class KAPI,OCPCfg,ServiceCA,Prom control
+    class Operator,MetricsSvc,Probes,NetPol operator
+    class APISrv,Proc,GC,Async tenant
+    class Creds,SrcSecret,RG secret
+    class PG,S3,Redis,OTEL externalservice
+    class IGW risk

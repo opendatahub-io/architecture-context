@@ -1,0 +1,173 @@
+RAY-MODULE-OPERATOR — SECURITY NETWORK DIAGRAM (RHOAI 3.7-ea.1)
+Source: architecture/rhoai-3.7-ea.1/ray-module-operator.md
+Repo:   red-hat-data-services/ray-module-operator @ fd5ac66 (branch rhoai-3.7-ea.1)
+Image:  quay.io/rhoai/odh-ray-module-operator-rhel9
+
+Scope: the module operator and the KubeRay operand resources it deploys. The
+module operator exposes no Route/Ingress/HTTPRoute. Its only egress is the
+Kubernetes API. KubeRay's own runtime behavior (Ray dashboard HTTPRoutes,
+RayCluster mTLS) is outside this repo.
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  KUBERNETES CONTROL PLANE (Trusted)                                          │
+│                                                                              │
+│  [Kubernetes API Server]                                                     │
+│  - Port: 6443/TCP   Protocol: HTTPS   Encryption: TLS 1.2+                   │
+│  - Enforces RBAC for every caller. Inbound callers:                          │
+│      Platform operator     — Platform SA token                               │
+│      ray-module-operator   — Module SA token (watch, SSA, TokenReview/SAR)   │
+│      kuberay-operator      — kuberay-operator SA token                       │
+│         ▲                                                                    │
+│         │ Port: 6443/TCP                                                     │
+│         │ Protocol: HTTPS                                                    │
+│         │ Encryption: TLS 1.2+                                               │
+│         │ Auth: Platform SA token                                            │
+├─────────┼────────────────────────────────────────────────────────────────────┤
+│  PLATFORM                                                                    │
+│                                                                              │
+│  [Platform Operator: rhods-operator / opendatahub-operator]                  │
+│  - Creates Deployment ray-module-operator-controller-manager                 │
+│  - Creates/projects Ray/default-ray (spec.applicationsNamespace)             │
+│  - Manages ConfigMap odh-ray-config, injects RELATED_IMAGE_* env             │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  APPLICATIONS NAMESPACE (spec.applicationsNamespace, immutable)              │
+│                                                                              │
+│  [ray-module-operator pod]  (NO NetworkPolicy — scaffold commented out)      │
+│  - Deployment: ray-module-operator-controller-manager (1 replica,            │
+│    --leader-elect, lease 0dc2a3f5.platform.opendatahub.io)                   │
+│  - ServiceAccount: ray-module-operator-controller-manager                    │
+│  - UID 65532, read-only root FS, /tmp emptyDir, restricted securityContext   │
+│  - Listeners:                                                                │
+│      8443/TCP HTTPS /metrics                                                 │
+│        Encryption: TLS 1.2+ (cluster APIServer TLS profile per adherence     │
+│                    policy, else Intermediate; fail-closed; HTTP/1.1 only)    │
+│        Cert: controller-runtime self-signed (in memory, per pod start)       │
+│        Auth: Bearer token -> TokenReview + SubjectAccessReview               │
+│              (requires get on non-resource URL /metrics)                     │
+│      8081/TCP HTTP  /healthz, /readyz                                        │
+│        Encryption: None   Auth: None (kubelet probes)                        │
+│  - Webhook server constructed but NO handlers registered                     │
+│  - Egress: Kubernetes API 6443/TCP HTTPS, TLS 1.2+, Module SA token          │
+│         ▲                                                                    │
+│         │ 8443/TCP HTTPS, TLS 1.2+, Bearer token                             │
+│         │ via Service ray-module-operator-controller-manager-metrics-service │
+│         │ (ClusterIP 8443 -> 8443)                                           │
+│  [Prometheus / OpenShift monitoring]                                         │
+│                                                                              │
+│  ─ ─ ─ ─ ─ ─ ─ ─  Operand (SSA-applied by module, field owner "ray") ─ ─ ─ ─ │
+│                                                                              │
+│  [kuberay-operator pod] v1.7.1                                               │
+│  - ServiceAccount: kuberay-operator                                          │
+│  - SCC: run-as-ray-user (MustRunAs uid 1000, drop ALL,                       │
+│         no privilege escalation, seccomp runtime/default)                    │
+│  - NetworkPolicy allow-metrics-traffic (RHOAIENG-96339):                     │
+│      8443/TCP from openshift-monitoring, openshift-user-workload-monitoring, │
+│               redhat-ods-monitoring                                          │
+│      8082/TCP, 9443/TCP port-only allows (ANY source — documented compromise)│
+│  - Listeners:                                                                │
+│      8443/TCP HTTPS metrics  — Service kuberay-operator (ClusterIP 8443)     │
+│        Cert: kuberay-operator-metrics-tls (OpenShift service-ca)             │
+│      9443/TCP HTTPS webhooks — Service kuberay-webhook-service (443 -> 9443) │
+│        Cert: kuberay-webhook-server-cert (cert-manager self-signed)          │
+│      8082/TCP HTTP health                                                    │
+│         ▲                                                                    │
+│         │ 443/TCP -> 9443/TCP HTTPS (TLS, CA injected by cert-manager)       │
+│         │ Caller: kube-apiserver   AdmissionReview                           │
+│         │ /mutate-ray-io-v1-raycluster   (mraycluster.kb.io)                 │
+│         │ /validate-ray-io-v1-raycluster (vraycluster.kb.io)                 │
+│         │ ray.io/v1 RayCluster CREATE/UPDATE, failurePolicy: Fail            │
+│  [Kubernetes API Server]                                                     │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                           │
+│                                                                              │
+│  None. Operand manifests are read from the image filesystem                  │
+│  (/opt/manifests/kuberay -> /tmp/ray-module-manifests). No Git/HTTP fetch.   │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+Egress (module operator):
+- Kubernetes API server 6443/TCP HTTPS TLS 1.2+, ServiceAccount token
+  (reconcile Ray CR, SSA-apply operands, watch ConfigMaps/APIServer,
+  TokenReview/SAR). No other egress.
+
+RBAC Summary (module operator):
+- ClusterRole: ray-module-operator-manager-role
+  (bound via ClusterRoleBinding ray-module-operator-manager-rolebinding
+   to SA ray-module-operator-controller-manager)
+  - components.platform.opendatahub.io: rays (full CRUD), rays/status
+    (get,update,patch), rays/finalizers (update)
+  - core: configmaps, events, persistentvolumeclaims, serviceaccounts,
+    services (CRUD); pods, pods/proxy, pods/resize, pods/status, secrets,
+    services/proxy, services/status (CRUD + deletecollection);
+    namespaces (get,list,watch)
+  - apps: deployments; batch: jobs (CRUD)
+  - admissionregistration.k8s.io: mutating/validatingwebhookconfigurations (CRUD)
+  - apiextensions.k8s.io: customresourcedefinitions (get,list,watch,create,
+    update,patch — NO delete)
+  - rbac.authorization.k8s.io: clusterroles, clusterrolebindings, roles,
+    rolebindings (CRUD)
+  - security.openshift.io: securitycontextconstraints (CRUD)
+  - cert-manager.io: certificates, issuers (CRUD); certificates/status
+  - ray.io: rayclusters, rayjobs, rayservices, raycronjobs (CRUD +
+    deletecollection); */finalizers; */status
+  - gateway.networking.k8s.io: gateways, httproutes, referencegrants (CRUD)
+  - networking.k8s.io: ingresses, ingressclasses, networkpolicies (CRUD);
+    extensions: ingresses (CRUD); route.openshift.io: routes (CRUD)
+  - discovery.k8s.io endpointslices; config.openshift.io apiservers;
+    operator.openshift.io kubeapiservers (read)
+  - coordination.k8s.io leases (CRUD); events.k8s.io events (create,patch)
+  - authentication/authorization.k8s.io tokenreviews/subjectaccessreviews (create)
+  NOTE: Breadth is required by Kubernetes RBAC escalation prevention — the
+  applier must hold every verb granted in the KubeRay ClusterRoles. Effective
+  privilege is a superset of KubeRay's (one of the most privileged platform
+  components).
+- Role (operator ns): ray-module-operator-manager-role, leader-election-role
+- ClusterRole: ray-module-operator-metrics-auth-role (TokenReview/SAR create)
+- ClusterRole: ray-module-operator-metrics-reader (nonResourceURL /metrics get)
+- ClusterRoles: ray-module-operator-ray-{admin,editor,viewer}-role (Ray CR)
+
+RBAC created at runtime:
+- ClusterRole "ray" (for Workbenches -> Notebook SAs, no ownerRef):
+  ray.io rayjobs (get,list,create,patch,delete); rayjobs/status,
+  rayclusters, rayclusters/status (get,list); core secrets (create)
+  RISK: scope depends on Workbenches binding (RoleBinding vs ClusterRoleBinding)
+- Operand: kuberay-operator (broad CRUD), kuberay-operator-configmap,
+  kuberay-operator-gateway-api, kuberay-tls-profile-role (apiservers read),
+  kuberay editor/viewer roles; bound to SA kuberay-operator.
+
+Service Mesh Configuration:
+- None. No PeerAuthentication/AuthorizationPolicy. KubeRay feature gates
+  RayClusterNetworkPolicy=true and RayClusterMTLS=true provide per-RayCluster
+  isolation (KubeRay-side).
+
+Secrets:
+- kuberay-webhook-server-cert (kubernetes.io/tls) - KubeRay webhook serving
+  cert, cert-manager self-signed Issuer selfsigned-issuer / Certificate
+  serving-cert, auto-renewed
+- kuberay-operator-metrics-tls (kubernetes.io/tls) - KubeRay HTTPS metrics,
+  OpenShift service-ca, auto-rotated
+- Module metrics cert - none mounted; controller-runtime self-signed in memory,
+  regenerated per pod start
+- Module operator reads no Secrets; secrets RBAC exists only for escalation rules
+
+Admission control (operand, deployed by module):
+- MutatingWebhookConfiguration kuberay-mutating-webhook-configuration
+- ValidatingWebhookConfiguration kuberay-validating-webhook-configuration
+- Both: ray.io/v1 RayCluster CREATE/UPDATE, failurePolicy: Fail
+  (RayCluster admission blocked if kuberay-operator is unavailable)
+
+Crypto / FIPS:
+- CGO_ENABLED=1, GOEXPERIMENT=strictfipsruntime, dynamic link, OpenSSL from
+  ubi9/ubi-minimal-pqc (digest-pinned). stdlib crypto/tls only.
+- No InsecureSkipVerify/MD5/SHA1 in Go source. Scaffold ServiceMonitor with
+  insecureSkipVerify: true is NOT deployed.
+
+Observations / Risks:
+- Module pod has no NetworkPolicy (8443 and 8081 reachable cluster-wide).
+- 8082/9443 on kuberay-operator allowed from any source.
+- --leader-elect with 1 replica, no LeaderElectionReleaseOnCancel: failover
+  waits full lease duration.
+- cert-manager is a hard prerequisite (reconcile error if CRDs absent).
+- RHOAI params.env defaults to quay.io/opendatahub/kuberay-operator:v1.7.1;
+  correct RHOAI images depend on platform-injected RELATED_IMAGE_*.

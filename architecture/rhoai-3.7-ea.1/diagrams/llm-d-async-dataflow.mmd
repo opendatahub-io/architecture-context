@@ -1,0 +1,48 @@
+sequenceDiagram
+    autonumber
+    participant Producer as Producer<br/>batch-gateway / job (producer lib)
+    participant Broker as Broker<br/>Redis 6379/TCP RESP (opt. TLS)<br/>or Postgres 5432/TCP or Pub/Sub 443/TCP
+    participant AP as llm-d-async<br/>Async Processor
+    participant Prom as Prometheus / EPP metrics<br/>HTTP per URL
+    participant IGW as Inference Gateway<br/>llm-d-router / EPP<br/>HTTP/HTTPS per igw_base_url
+    participant VLLM as vLLM pool<br/>8000/TCP (typical)
+    participant OTLP as OTLP collector<br/>4317/TCP gRPC
+    participant K8s as Kubernetes API<br/>6443/TCP HTTPS
+
+    Note over AP,Broker: Startup (sql transport): apply schema migrations<br/>5432/TCP, SQL_URL credentials
+    AP->>K8s: Load REST config (ctrl.GetConfigOrDie)<br/>SA token, TLS 1.2+
+
+    rect rgb(235, 245, 255)
+    Note over Producer,VLLM: Flow 1: Async request dispatch (redis-sortedset)
+    Producer->>Broker: Enqueue request (id, deadline, metadata)<br/>Redis password
+    AP->>Broker: Poll / claim (lease, 300s TTL)<br/>REDIS_URL credentials
+    Broker-->>AP: Request message
+    AP->>Prom: Budget / saturation query (PromQL or scrape)<br/>No auth
+    Prom-->>AP: Free capacity estimate
+    Note over AP: Queue gates (Refuse/Drop) → merge policy →<br/>pool gates (Wait up to --gate-wait-timeout)
+    AP->>IGW: POST igw_base_url + /v1/completions<br/>x-llm-d-inference-fairness-id, x-llm-d-inference-objective<br/>Plain HTTP or TLS 1.2+ / optional mTLS client cert
+    IGW->>VLLM: Route to model server (gateway-defined)
+    VLLM-->>IGW: Completion
+    IGW-->>AP: 200 response
+    AP->>Broker: Write result keyed by id
+    Producer->>Broker: Read result
+    end
+
+    rect rgb(255, 240, 230)
+    Note over AP,IGW: Flow 2: Retry / deadline handling
+    IGW-->>AP: 429 / 5xx / x-llm-d-request-dropped-reason<br/>or transient transport error
+    alt Deadline not passed
+        AP->>Broker: Re-enqueue with exponential backoff
+    else Deadline passed
+        AP->>Broker: Write DEADLINE_EXCEEDED error result
+    end
+    end
+
+    rect rgb(240, 255, 240)
+    Note over Prom,OTLP: Flow 4: Observability
+    Prom->>AP: Scrape GET /metrics 9090/TCP HTTP<br/>No auth (chart default)
+    opt --metrics-endpoint-auth=true
+        AP->>K8s: TokenReview + SubjectAccessReview
+    end
+    AP->>OTLP: Export traces, plaintext gRPC (chart default)
+    end

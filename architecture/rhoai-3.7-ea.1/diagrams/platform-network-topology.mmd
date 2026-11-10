@@ -1,0 +1,138 @@
+graph TB
+    %% RHOAI 3.7-ea.1 - Platform Network Topology
+    %% Source: PLATFORM.md - Platform Network Architecture
+
+    subgraph External["EXTERNAL - Untrusted"]
+        Browser["User Browser"]
+        APIClient["API / SDK Client"]
+        MaaSClient["MaaS Client<br/>Bearer sk-oai-* API key"]
+        PeerSite["Peer AI Grid Site"]
+    end
+
+    subgraph Edge["INGRESS EDGE - OpenShift Router"]
+        OcpRoute["Route data-science-gateway<br/>reencrypt 443/TCP"]
+        Redirect["Legacy Routes rhods-dashboard<br/>edge, nginx redirect only"]
+        CompRoutes["Component reencrypt Routes<br/>DSPO, TrustyAI, Observability,<br/>Feast, Model Registry, raw ISVC"]
+        EdgeRoutes["Edge Routes / Ingress<br/>rhoai-mcp, llm-d-planner,<br/>OGX, Spark UI"]
+        GridLB["AI Grid LoadBalancers<br/>SWIM UDP 7946, signals TCP 9091"]
+    end
+
+    subgraph Ingress["openshift-ingress - Gateway API, OSSM Envoy"]
+        DSGW["data-science-gateway<br/>HTTPS 443 rh-ai.{domain}<br/>EnvoyFilter ext_authz + Lua<br/>fail closed, 5s timeout"]
+        KAP["kube-auth-proxy<br/>8443/TCP HTTPS service-ca<br/>2 replicas, HPA 2-10<br/>NetworkPolicy: gateway pods only"]
+        InfGW["openshift-ai-inference<br/>HTTPS 443<br/>Kuadrant wasm, TokenReview + SAR"]
+        MaasGW["maas-default-gateway<br/>HTTPS 443 maas.{domain}<br/>AuthPolicy + TRLP + ext_proc"]
+        PExt["praxis-extproc / payload-processing<br/>ext_proc 9004/TCP<br/>ipp fail closed, ipp-pre fail open"]
+    end
+
+    subgraph Kuadrant["kuadrant-system - external prerequisite"]
+        Authorino["Authorino<br/>gRPC 50051/TCP service-ca TLS"]
+        Limitador["Limitador<br/>token rate limits"]
+    end
+
+    subgraph Apps["redhat-ods-applications - controllers"]
+        Dashboard["odh-dashboard"]
+        MLflow["MLflow<br/>8443/TCP workspace SSAR"]
+        MRCat["Model Registry / Catalog<br/>kube-rbac-proxy SAR"]
+        OMCApi["odh-model-controller<br/>model-serving-api 8443"]
+        Ctrls["Module operators + controllers<br/>metrics 8443 TokenReview + SAR<br/>probes 8081, webhooks 9443"]
+    end
+
+    subgraph MaaSNS["redhat-ai-gateway-infra"]
+        MaasAPI["maas-api 8443/TCP<br/>internal validate endpoints:<br/>NetworkPolicy only"]
+    end
+
+    subgraph Tenant["User project namespaces"]
+        NB["Notebook pod<br/>kube-rbac-proxy 8443 to Jupyter 8888<br/>SAR get notebooks/{name}"]
+        EPP["llm-d EPP<br/>ext_proc 9002/TCP TLS<br/>metrics 9090"]
+        VLLM["vLLM pods<br/>no built-in auth<br/>NIXL KV transfer"]
+        ISVC["Predictive ISVC runtimes<br/>kube-rbac-proxy when enabled"]
+        DSPA["DSPA API server<br/>8888/8887 NetworkPolicy only<br/>KRP SAR on route"]
+        Ray["RayCluster dashboards"]
+    end
+
+    subgraph Grid["redhat-ai-grid - Tech Preview"]
+        GridOp["praxis-ai-grid-operator<br/>signals mTLS 9091<br/>metrics 9090 unauthenticated"]
+    end
+
+    subgraph Monitoring["redhat-ods-monitoring"]
+        Prom["Prometheus via kube-rbac-proxy<br/>+ prom-label-proxy"]
+        OTel["OTel collectors<br/>OTLP 4317/4318 TLS"]
+    end
+
+    subgraph Egress["EGRESS - External Services"]
+        K8sAPI["Kubernetes API<br/>6443/TCP HTTPS SA token"]
+        OCPOAuth["OpenShift OAuth / OIDC IdP<br/>HTTPS 443"]
+        LLMProv["External LLM Providers<br/>HTTPS 443 TLS origination + SNI<br/>provider API key injected"]
+        Registry["Container / OCI registries<br/>quay.io, registry.redhat.io"]
+        S3["Object Storage S3<br/>models, artifacts, Tempo, Loki"]
+    end
+
+    %% External to edge
+    Browser -->|HTTPS 443| OcpRoute
+    Browser -.->|HTTPS 443 old host| Redirect
+    APIClient -->|HTTPS 443 Bearer| CompRoutes
+    APIClient -->|HTTPS 443 Bearer| InfGW
+    APIClient -->|HTTPS 443| EdgeRoutes
+    MaaSClient -->|HTTPS 443| MaasGW
+    PeerSite <-->|UDP 7946 AES-256-GCM<br/>TCP 9091 mTLS| GridLB
+
+    %% Edge to gateway
+    OcpRoute -->|reencrypt 443| DSGW
+    Redirect -.->|302| OcpRoute
+    GridLB --> GridOp
+
+    %% data-science-gateway chain
+    DSGW -->|ext_authz HTTPS 8443<br/>cookie, authorization| KAP
+    KAP -->|OAuth redirect| OCPOAuth
+    KAP -->|TokenReview| K8sAPI
+    DSGW -->|HTTPS insecureSkipVerify<br/>DR data-science-tls-rule| Dashboard
+    DSGW -->|HTTPS Bearer| NB
+    DSGW -->|HTTPS Bearer| MLflow
+    DSGW -->|HTTPS Bearer| MRCat
+    DSGW -->|HTTPS Bearer| Ray
+
+    %% inference gateway chain
+    InfGW -->|gRPC 50051 TLS<br/>TokenReview + SAR| Authorino
+    InfGW -->|ext_proc 9002 TLS| EPP
+    EPP -->|HTTP/HTTPS| VLLM
+
+    %% MaaS chain
+    MaasGW -->|1 ipp-pre ext_proc 9004| PExt
+    MaasGW -->|2 AuthPolicy gRPC 50051| Authorino
+    Authorino -->|validate API key HTTPS 8443| MaasAPI
+    MaasGW -->|3 TokenRateLimitPolicy| Limitador
+    MaasGW -->|4 ipp ext_proc 9004| PExt
+    MaasGW -->|5 HTTPS to InferencePool| EPP
+    MaasGW -->|HTTPS 443 SIMPLE TLS + SNI| LLMProv
+    MaasGW -->|maas-api-route HTTPS 8443<br/>insecureSkipVerify| MaasAPI
+
+    %% Component routes
+    CompRoutes -->|reencrypt to KRP 8443| DSPA
+    CompRoutes -->|reencrypt| ISVC
+    CompRoutes -->|reencrypt| Prom
+
+    %% Controllers to infra
+    Ctrls -->|HTTPS 6443 SA token| K8sAPI
+    Ctrls -->|OCI pulls| Registry
+    OMCApi -->|SSAR| K8sAPI
+    VLLM -->|model download| S3
+    DSPA -->|artifacts| S3
+    VLLM -.->|OTLP 4317| OTel
+    Prom -->|scrape 8443 Bearer| Ctrls
+
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef edge fill:#fde2c4,stroke:#c77700,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef internal fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef tenant fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef egress fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef risk fill:#f8cecc,stroke:#b85450,stroke-width:2px
+
+    class Browser,APIClient,MaaSClient,PeerSite external
+    class OcpRoute,Redirect,CompRoutes,EdgeRoutes,GridLB edge
+    class DSGW,KAP,InfGW,MaasGW,PExt,Authorino,Limitador ingress
+    class Dashboard,MLflow,MRCat,OMCApi,Ctrls,Prom,OTel internal
+    class NB,EPP,VLLM,ISVC,Ray tenant
+    class K8sAPI,OCPOAuth,LLMProv,Registry,S3 egress
+    class MaasAPI,DSPA,GridOp risk

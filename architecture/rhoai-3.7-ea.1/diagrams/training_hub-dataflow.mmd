@@ -1,0 +1,39 @@
+sequenceDiagram
+    participant Trainer as Kubeflow Trainer controller
+    participant Kubelet as Kubelet
+    participant Launcher as training_hub launcher<br/>sft() / osft() in pod
+    participant Workers as torchrun workers<br/>InstructLab / Mini-Trainer
+    participant Peers as Peer pods<br/>master_port/TCP + NCCL
+    participant PVC as PVC output_dir
+    participant S3 as S3-compatible storage<br/>443/TCP HTTPS
+    participant LLM as OpenAI-compatible endpoint<br/>HTTP/HTTPS
+    participant MLflow as MLflow tracking<br/>URI-defined
+
+    Note over Trainer,S3: Flow 1 - Distributed SFT/OSFT inside a TrainJob
+    Trainer->>Launcher: Pod spec with PET_* env and command<br/>Kubernetes RBAC
+    Launcher->>S3: Write/read/delete probe at train() entry<br/>AWS creds from env
+    Launcher->>Workers: Process spawn + TRAINING_HUB_CALLBACKS_PATH<br/>payload file mode 0600
+    Workers->>Workers: exec() rebuilds callback classes
+    Workers->>Peers: c10d rendezvous + NCCL collectives<br/>No TLS, no auth
+    Workers->>PVC: Write checkpoints to ckpt_output_dir
+    Launcher->>S3: Node-0 uploads checkpoint-N/ + .upload_complete<br/>HTTPS TLS (SDK default)
+
+    Note over Kubelet,S3: Flow 2 - JIT preemption checkpoint and resume
+    Kubelet->>Workers: SIGTERM (eviction / preemption)
+    Workers->>Peers: all_reduce MAX on stop flag<br/>NCCL/Gloo, no encryption
+    Workers->>PVC: Save checkpoint at shared step boundary
+    Launcher->>S3: Upload during grace period (default 120s)<br/>4 workers, 3 attempts
+    Note over Launcher,S3: Restarted pod
+    S3-->>Launcher: Restore completed checkpoint<br/>via .restore_tmp to output_dir
+
+    Note over Launcher,MLflow: Flow 3 - GEPA prompt optimization
+    Launcher->>Launcher: gepa() sets OPENAI_API_BASE / OPENAI_API_KEY<br/>("dummy" if unset), restored afterwards
+    Launcher->>LLM: Task + reflection LLM calls via litellm<br/>Bearer OPENAI_API_KEY
+    LLM-->>Launcher: Completions
+    Launcher->>MLflow: Optional MLflowGEPABackend tracking<br/>MLflow SDK auth
+    Launcher->>PVC: Write optimized prompts to output_dir
+
+    Note over Launcher,MLflow: Flow 4 - GRPO with verl
+    Launcher->>Workers: subprocess.Popen verl, stdout pipe parsed for metrics
+    Workers->>Peers: vLLM rollouts + trainer via Ray / NCCL<br/>No encryption
+    Workers->>MLflow: Optional metrics to MLflow or W&B<br/>HTTPS 443 / API key

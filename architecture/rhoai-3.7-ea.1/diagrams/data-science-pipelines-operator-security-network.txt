@@ -1,0 +1,178 @@
+DATA SCIENCE PIPELINES OPERATOR (DSPO) - SECURITY NETWORK DIAGRAM
+Source: architecture/rhoai-3.7-ea.1/data-science-pipelines-operator.md
+Version: rhoai-3.7-ea.1 (commit 9f2fbf4, Kubeflow Pipelines 2.16.0, Argo Workflows 3.6.12)
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                        │
+│                                                                              │
+│  [KFP SDK / Browser / ODH Dashboard user]                                    │
+│         │                                                                    │
+│         │ Port: 443/TCP                                                      │
+│         │ Protocol: HTTPS                                                    │
+│         │ Encryption: TLS (OpenShift router)                                 │
+│         │ Auth: Bearer token (OpenShift user or SA)                          │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (OpenShift Router; no Gateway API / Istio resources created)        │
+│                                                                              │
+│  [Route ds-pipeline-<dspa>]   443/TCP → proxy 8443, Reencrypt, HTTP redirect │
+│      Created when apiServer.enableOauth                                      │
+│  [Route ds-pipeline-md-<dspa>] 443/TCP → proxy 8443, Reencrypt               │
+│      Created by default (mlmd.envoy.deployRoute). POSSIBLE DEFECT: Route     │
+│      backend is ds-pipeline-metadata-envoy-<dspa>, but Service is named      │
+│      ds-pipeline-md-<dspa> → Route likely has no backend.                    │
+│  [Route minio-<dspa>]         443/TCP → 9000, Edge (TLS at router only)      │
+│      Only when objectStorage.enableExternalRoute=true                        │
+│         │                                                                    │
+│         │ Port: 8443/TCP                                                     │
+│         │ Protocol: HTTPS                                                    │
+│         │ Encryption: TLS reencrypt (service-ca cert                         │
+│         │             ds-pipelines-proxy-tls-<dspa>)                         │
+│         │ Auth: Bearer token forwarded                                       │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  DSPA TENANT NAMESPACE (per DSPA; enforced by NetworkPolicy ds-pipelines-<dspa>)
+│                                                                              │
+│  [API server pod: ds-pipeline-<dspa>]   SA: ds-pipeline-<dspa>               │
+│    ├─ kube-rbac-proxy          8443/TCP HTTPS                                │
+│    │    TLS min version / ciphers from cluster APIServer profile             │
+│    │    (applied only under StrictAllComponents; else Intermediate)          │
+│    │    AuthN: TokenReview  AuthZ: SAR datasciencepipelinesapplications/api  │
+│    │    on the named DSPA. NetworkPolicy: 8443 open to ALL sources.          │
+│    ├─ kube-rbac-proxy-metrics  8445/TCP HTTPS                                │
+│    │    SAR datasciencepipelinesapplications/metrics; monitoring ns only     │
+│    └─ KFP API server           8888/TCP HTTP(S) REST, 8887/TCP gRPC          │
+│         Encryption: service-ca TLS only when podToPodTLS                     │
+│         Auth: NONE — NetworkPolicy only. Allowed sources: persistence agent, │
+│         scheduled-workflow controller, pods labelled                         │
+│         pipelines.kubeflow.org/v2_component=true                             │
+│         RISK: any namespace user who can create pods can set this label.     │
+│         │                                                                    │
+│         │ kube-rbac-proxy → kube-apiserver 6443/TCP HTTPS (TokenReview/SAR,  │
+│         │ via system:auth-delegator ClusterRoleBinding)                      │
+│         │ kube-rbac-proxy → API server 8888/TCP (in-pod)                     │
+│         ▼                                                                    │
+│  [Persistence agent]        → API 8888/8887  HTTP/gRPC, optional TLS, SA token│
+│  [Scheduled-workflow ctrl]  → API 8887       gRPC; reconciles ScheduledWorkflow
+│  [Argo workflow controller] --namespaced; metrics 9090/TCP HTTP, no auth     │
+│         → kube-apiserver 6443 (create pods; workflow-controller SA)          │
+│  [Driver/launcher pods]     SA: pipeline-runner-<dspa>                       │
+│         → API 8887/8888 gRPC/HTTP, no auth (NetworkPolicy)                   │
+│         → MLMD gRPC 8080, no auth (NetworkPolicy)                            │
+│         → Object storage 9000/443 (S3 keys)                                  │
+│  [MLMD Envoy ds-pipeline-md-<dspa>]  9090/TCP gRPC-Web (plain),              │
+│         8443/TCP kube-rbac-proxy HTTPS, Bearer + SAR                         │
+│  [MLMD gRPC ds-pipeline-metadata-grpc-<dspa>]  8080/TCP gRPC, no auth,       │
+│         service-ca TLS when podToPodTLS                                      │
+│  [MariaDB mariadb-<dspa>] (optional)  3306/TCP MySQL, service-ca TLS         │
+│         (ds-pipelines-mariadb-tls-<dspa>), DB password, PVC-backed           │
+│  [MinIO minio-<dspa>] (optional, dev only)  9000/TCP HTTP, NO TLS, S3 keys   │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  OPERATOR NAMESPACE: redhat-ods-applications                                 │
+│                                                                              │
+│  [data-science-pipelines-operator-controller-manager]                        │
+│  - SA: controller-manager (ClusterRole manager-role, manager-argo-role)      │
+│  - Image: quay.io/rhoai/odh-data-science-pipelines-operator-controller-rhel9 │
+│  - 8081/TCP HTTP /healthz /readyz, no auth (NetworkPolicy: any source)       │
+│  - 8443/TCP HTTPS /metrics, Bearer + TokenReview/SAR                         │
+│      service-ca cert data-science-pipelines-operator-metrics-tls             │
+│      TLS config from cluster APIServer profile (Intermediate fallback)       │
+│      NetworkPolicy: openshift-monitoring, openshift-user-workload-monitoring,│
+│      redhat-ods-monitoring, opendatahub-monitoring                           │
+│  - 9443/TCP opened in NetworkPolicy but no webhook handlers registered       │
+│    (server not started; leftover config)                                     │
+│         │                                                                    │
+│         │ Port: 6443/TCP  HTTPS TLS 1.2+  Auth: SA token                     │
+│         │ → kube-apiserver (watch/CRUD DSPAs and all child resources)        │
+│         │ Port: 3306/TCP  MySQL  Optional TLS (default OFF; skip-verify /    │
+│         │   preferred → InsecureSkipVerify)  Auth: DB password Secret        │
+│         │ Port: 9000/443  HTTP(S)  TLS when secure (TLS 1.2 min w/ custom CA)│
+│         │   Auth: S3 keys → object store health check                        │
+│         │ Port: 443/TCP  HTTPS  Auth: authn.DefaultKeychain                  │
+│         │   → container registries (managed pipelines OCI pull;              │
+│         │   MANAGED_PIPELINES_ALLOWED_REGISTRIES unset = all allowed)        │
+│         ▼                                                                    │
+│  [ds-pipeline-webhook] (shared; when any DSPA uses pipelineStore=kubernetes) │
+│  - 8443/TCP HTTPS, service-ca cert ds-pipeline-webhook-tls                   │
+│  - Caller: kube-apiserver (no client auth configured)                        │
+│  - Mutating + validating pipelineversions.pipelines.kubeflow.org,            │
+│    failurePolicy: Fail → outage blocks PipelineVersion writes in ALL tenants │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  MONITORING (redhat-ods-monitoring)                                          │
+│                                                                              │
+│  [Prometheus SA data-science-monitoringstack-prometheus]                     │
+│         → DSPO 8443/TCP HTTPS, Bearer + SAR (metrics-reader)                 │
+│         → API server 8445/TCP HTTPS, Bearer + SAR                            │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                           │
+│                                                                              │
+│  [External MySQL]   3306/TCP, optional TLS, username/password Secret         │
+│  [S3 / SeaweedFS]   443 / 8333/TCP, TLS when secure, S3 access keys          │
+│  [Container registries]  443/TCP HTTPS, default keychain                     │
+│  [MLflow, app: mlflow in applications ns]  HTTPS (e.g. 8443), workload bearer│
+│  [HTTP(S) proxy, spec.proxy]  HTTP/HTTPS/SOCKS5; ports added to API egress   │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- ClusterRole: manager-role (bound to controller-manager via manager-rolebinding)
+  - core: configmaps, PVs, PVCs, pods, pods/exec, pods/log, secrets,
+          serviceaccounts, services — full CRUD (cluster-wide)
+  - rbac.authorization.k8s.io: roles, rolebindings, clusterroles,
+          clusterrolebindings — full CRUD (privilege-escalation surface)
+  - apps: deployments, replicasets — full CRUD; batch: jobs — full CRUD
+  - admissionregistration.k8s.io: webhook configurations (resourceNames
+          pipelineversions.pipelines.kubeflow.org)
+  - apiextensions.k8s.io: customresourcedefinitions (named Argo CRDs)
+  - argoproj.io, kubeflow.org, pipelines.kubeflow.org,
+          datasciencepipelinesapplications.opendatahub.io — full CRUD
+  - route.openshift.io routes, networking.k8s.io networkpolicies — full CRUD
+  - ray.io, serving.kserve.io, workload.codeflare.dev — CRUD (passed through
+          to pipeline-runner SA)
+  - monitoring.coreos.com / monitoring.rhobs: servicemonitors, prometheusrules
+  - authentication/authorization: tokenreviews, subjectaccessreviews — create
+  - config.openshift.io apiservers — get/list/watch
+  - components.platform.opendatahub.io: aipipelines; delete
+          default-datasciencepipelines
+- ClusterRole: manager-argo-role (Argo controller permission set to delegate)
+- ClusterRole: argo-cluster-role → SA argo (secrets restricted to
+          argo-workflows-agent-ca-certificates via resourceNames)
+- ClusterRoles: aggregate-dspa-admin-edit / aggregate-dspa-admin-view
+          (DSPA + /api, pipelines, pipelineversions; aggregated to
+          admin/edit/view — this is how users get DSPA API access)
+- ClusterRoles: argo-aggregate-to-admin / -edit / -view
+- Per DSPA (runtime): ClusterRoleBinding ds-pipeline-ui-auth-delegator-<ns>-<dspa>
+          → system:auth-delegator (no owner reference); RoleBindings for
+          ds-pipeline-<dspa>, pipeline-runner-<dspa>, persistence agent,
+          scheduled workflow, workflow controller
+- ClusterRoleBinding data-science-pipelines-operator-rhoai-prometheus
+          → metrics-reader for data-science-monitoringstack-prometheus
+
+Network Policies:
+- Operator (OpenShift overlay): ingress 8081 any; 8443 monitoring namespaces;
+  9443 opened (no handlers)
+- Per DSPA ds-pipelines-<dspa>: 8888/8887 only from persistence agent,
+  scheduled workflow, v2_component=true pods; 8443 from all sources (router
+  may use host networking); egress to DB, S3, MLMD, MLflow, proxy ports.
+  External DB/S3 egress allowed by port only.
+
+Secrets:
+- data-science-pipelines-operator-metrics-tls (kubernetes.io/tls) - operator metrics cert, service-ca, auto-rotate
+- ds-pipelines-proxy-tls-<dspa> (kubernetes.io/tls) - API server kube-rbac-proxy cert, service-ca, auto-rotate
+- ds-pipelines-envoy-proxy-tls-<dspa> (kubernetes.io/tls) - MLMD Envoy proxy cert, service-ca, auto-rotate
+- ds-pipeline-metadata-grpc-tls-certs-<dspa> (kubernetes.io/tls) - MLMD gRPC cert, service-ca, auto-rotate
+- ds-pipelines-mariadb-tls-<dspa> (kubernetes.io/tls) - MariaDB TLS, service-ca, auto-rotate
+- ds-pipeline-webhook-tls (kubernetes.io/tls) - admission webhook cert, service-ca, auto-rotate
+- ds-pipeline-db-<dspa> or user-specified (Opaque) - DB password, crypto/rand generated, no rotation
+- Object storage credentials (Opaque) - S3 access/secret key, generated (MinIO) or user, no rotation
+- ds-pipeline-metadata-grpc-tls-config-secret-<dspa> (Opaque) - MLMD config.proto with MySQL settings
+- argo-workflows-agent-ca-certificates (Opaque) - Argo agent CA, rotation unknown
+
+Crypto / FIPS:
+- Build: CGO_ENABLED=0 GOFIPS140=v1.0.0 -tags no_openssl (static; Go native
+  FIPS 140-3 module); runtime ubi9/ubi-minimal-pqc. Does not match classic
+  check-payload (dynamic CGO + OpenSSL) pattern; acceptance unverified.
+- TLS: crypto/tls; min version from cluster profile (Intermediate = TLS 1.2
+  fallback); max unconstrained; SecurityProfileWatcher restarts on change.
+- Weak spots: MySQL health check default no TLS; skip-verify/preferred →
+  InsecureSkipVerify; MinIO 9000 plaintext; raw API/MLMD ports unauthenticated.

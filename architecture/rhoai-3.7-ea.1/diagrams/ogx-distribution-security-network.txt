@@ -1,0 +1,155 @@
+ogx-distribution — Security Network Diagram (SAR)
+Source: architecture/rhoai-3.7-ea.1/ogx-distribution.md
+Image:  quay.io/rhoai/odh-ogx-core-rhel9 (OGX 1.4.1+rhaiv.0, RHOAI 3.7.0-ea.1)
+Commit: 2bd34cc2090d11f02d6e83de6c924f37e082a9e9 (rhoai-3.7-ea.1)
+
+SCOPE NOTE: This repo is a packaging/distribution repo. It defines NO Service,
+Route, Ingress, NetworkPolicy, RBAC or Secret objects. The OGX operator creates
+the Deployment, Service, Route and Secrets. Edge/ingress values below are
+therefore "operator/platform-defined" and are not verified by this repo.
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL / CALLERS (Untrusted)                                         │
+│                                                                         │
+│  [Client: notebook, app, agent]                                         │
+│         │                                                               │
+│         │ Port: 443/TCP (only if the operator/platform exposes it)      │
+│         │ Protocol: HTTPS                                               │
+│         │ Encryption: TLS at platform edge (not configured here)        │
+│         │ Auth: Optional Bearer JWT                                     │
+│         ▼                                                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│  PLATFORM EDGE (operator/platform-defined — NOT in this repo)           │
+│                                                                         │
+│  [Route / Gateway / service mesh]  - TLS termination expected here      │
+│  [Praxis proxy] (test evidence only) - sets x-tenant-id / x-user-id     │
+│         │                                                               │
+│         │ Port: 8321/TCP                                                │
+│         │ Protocol: HTTP                                                │
+│         │ Encryption: NONE (server runs `ogx run --insecure`)           │
+│         │ Auth: None by default; OAuth2 JWT when AUTH_ISSUER is set     │
+│         ▼                                                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│  CLUSTER NAMESPACE (operator-managed)                                   │
+│                                                                         │
+│  [OGX Server Pod]                                                       │
+│  - Image: quay.io/rhoai/odh-ogx-core-rhel9                              │
+│  - Entrypoint: /opt/app-root/entrypoint.sh -> ogx run --insecure        │
+│  - Listen: 8321/TCP HTTP (Service: ClusterIP assumed, operator-created) │
+│  - Metrics: `metrics` named port, /metrics, HTTP, NO auth               │
+│  - Labels scraped: app.kubernetes.io/managed-by: ogx-operator           │
+│  - AuthN: in-process OAuth2 JWT (audience `ogx`) via AUTH_JWKS_URI      │
+│  - AuthZ: in-process owner-based ABAC                                   │
+│  - K8s API access: none                                                 │
+│         ▲                                                               │
+│         │ [Prometheus] ServiceMonitor, every 60s, HTTP, no auth         │
+│         │ (label monitoring.opendatahub.io/scrape: "true")              │
+│                                                                         │
+│  Egress (in-cluster / operator-defined endpoints):                      │
+│                                                                         │
+│  OGX ──► [PostgreSQL] (POSTGRES_HOST)            REQUIRED               │
+│          Port: 5432/TCP  Protocol: PostgreSQL wire                      │
+│          Encryption: not configured (asyncpg driver default)            │
+│          Auth: username/password (POSTGRES_PASSWORD)                    │
+│          Data: all KV + SQL state (responses, conversations,            │
+│                inference logs, files/vector-store metadata, registry)   │
+│                                                                         │
+│  OGX ──► [KServe / vLLM / MaaS] (VLLM_URL, VLLM_EMBEDDING_URL)          │
+│          Port: operator-defined (e.g. 8000 or 443)                      │
+│          Protocol: HTTP/HTTPS (OpenAI-compatible)                       │
+│          Encryption: TLS only for https URLs; tls_verify default true,  │
+│                      can be disabled (VLLM_TLS_VERIFY)                  │
+│          Auth: Bearer VLLM_API_TOKEN (default literal `fake`)           │
+│                                                                         │
+│  OGX ──► [Milvus] 19530 gRPC/HTTP, optional TLS/mTLS, token             │
+│  OGX ──► [pgvector] 5432/TCP PG wire, driver default, user/password     │
+│  OGX ──► [Qdrant] 6333/TCP HTTP, 6334/TCP gRPC, optional HTTPS, API key │
+│  OGX ──► [OTLP collector] 4317 gRPC / 4318 HTTP, per OTEL_* env         │
+│         │                                                               │
+│         │ Port: 443/TCP                                                 │
+│         │ Protocol: HTTPS                                               │
+│         │ Encryption: TLS (system trust store)                          │
+│         ▼                                                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES (all optional, env-gated)                            │
+│                                                                         │
+│  [api.openai.com / OPENAI_BASE_URL]     API key                         │
+│  [api.anthropic.com]                    API key                         │
+│  [Azure OpenAI AZURE_API_BASE]          API key                         │
+│  [AWS Bedrock, default us-east-2]       Bearer token or IAM web identity│
+│  [Google Vertex AI / Gemini]            GCP creds / API key / token     │
+│  [IBM watsonx us-south.ml.cloud.ibm.com] API key                        │
+│  [S3 / S3_ENDPOINT_URL]                 AWS access key + secret         │
+│  [Brave / Tavily search]                API key                         │
+│  [OIDC JWKS AUTH_JWKS_URI]              no auth; AUTH_VERIFY_TLS        │
+│                                         (default true), AUTH_TLS_CAFILE │
+│                                         key refresh every 3600s         │
+│  [MCP servers, user-supplied]           HTTP/SSE, port/TLS/auth vary    │
+└─────────────────────────────────────────────────────────────────────────┘
+
+Build-time network (Konflux, hermetic):
+- Hermeto prefetch -> packages.redhat.com RHEL AI PyPI (cpu-torch2.13-el9.8)
+    443/TCP HTTPS TLS, auth: rhel-ai-private-index-auth
+- Buildah pre-pull -> quay.io/aipcc/base-images/cpu-torch2.13-el9.8:latest
+    (tag-based, NOT digest-pinned) and
+    registry.redhat.io/rhai/modelcar-redhatai-ogx-distribution:3.0
+    443/TCP HTTPS TLS, auth: pull secret
+- Hermetic build (--no-index) -> push quay.io/rhoai/odh-ogx-core-rhel9
+    443/TCP HTTPS TLS, auth: SA build-pipeline-odh-ogx-core-v3-7-ea-1
+- Platforms: x86_64, aarch64, ppc64le, s390x
+
+RBAC Summary:
+- ClusterRoles / Roles / Bindings: NONE defined in this repo.
+- The OGX server does not call the Kubernetes API.
+- ServiceAccount for the pod is created by the OGX operator.
+
+Application Authorization (distribution/config.yaml:256-280):
+- server.auth.provider_config.type = ${env.AUTH_ISSUER:+oauth2_token}
+  - AUTH_ISSUER unset -> server is UNAUTHENTICATED (default)
+  - AUTH_ISSUER set   -> JWT bearer validated against AUTH_JWKS_URI,
+                         audience AUTH_AUDIENCE (default `ogx`)
+- ABAC policy:
+  - read unowned resources (models, providers): everyone
+  - create: any authenticated user
+  - read / update / delete: resource owner only
+- /metrics: no auth, open to anything that can reach the port
+- Praxis (test evidence): x-tenant-id / x-user-id headers; cross-user and
+  cross-tenant reads/deletes return 403/404 for files and vector stores
+
+Service Mesh / Network Policy:
+- None defined in this repo. No NetworkPolicy, PeerAuthentication or
+  AuthorizationPolicy. Transport security depends on operator/platform.
+
+Secrets (consumed as env vars or *_FILE mounted files; 18 resolved by
+distribution/entrypoint.sh:35-54; read once at startup, no auto-rotation):
+- POSTGRES_PASSWORD, PGVECTOR_PASSWORD           - database credentials
+- VLLM_API_TOKEN, VLLM_EMBEDDING_API_TOKEN       - inference bearer tokens
+- OPENAI_API_KEY, ANTHROPIC_API_KEY, AZURE_API_KEY, WATSONX_API_KEY,
+  GEMINI_API_KEY, GEMINI_ACCESS_TOKEN, AWS_BEDROCK_BEARER_TOKEN
+                                                 - third-party LLM credentials
+- AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY       - S3 file storage
+- MILVUS_TOKEN, QDRANT_API_KEY                   - vector store credentials
+- BRAVE_SEARCH_API_KEY, TAVILY_SEARCH_API_KEY    - web search tools
+- DOCLING_SERVE_API_KEY                          - docling-serve (dependency-only)
+- rhel-ai-private-index-auth (Konflux build secret) - private index auth
+Note: _FILE values are exported into the exec'd ogx process environment; the
+mechanism keeps secrets out of the Pod spec, not out of process memory.
+Setting both VAR and VAR_FILE is rejected at startup.
+
+Crypto / FIPS:
+- No server TLS (--insecure). Client TLS uses library defaults
+  (httpx/openai/boto3) with tls_verify toggles for vLLM and JWKS.
+- cryptography 50.0.2 (OpenSSL-backed), pyjwt 2.15.1, Python ssl stdlib.
+- OpenSSL inherited from AIPCC RHEL 9.8 base; no explicit FIPS opt-in.
+
+Key Risks:
+1. Plain HTTP on 8321 and unauthenticated by default; security depends
+   entirely on operator/platform deployment.
+2. /metrics unauthenticated.
+3. tls_verify for vLLM and JWKS can be disabled via env vars.
+4. VLLM_API_TOKEN defaults to the literal `fake`.
+5. PostgreSQL TLS not configured (driver default).
+6. Base image tag-based (not digest-pinned); no RPM lockfile;
+   public-repos.sh runs as root during build.
+7. All users of an instance share upstream provider credentials and
+   PostgreSQL tables (isolation by application filtering only).

@@ -1,0 +1,203 @@
+llm-d - Security Network Diagram (SAR format)
+Source: architecture/rhoai-3.7-ea.1/llm-d.md  (llm-d/llm-d @ b0621c6, guides reference llm-d v1.0)
+Generated: 2026-11-10
+
+SCOPE NOTE
+  llm-d is a meta-repository of deployment recipes, guides, and auxiliary images.
+  It runs no service of its own. The topology below is what the upstream guides
+  deploy using external components: the llm-d-router chart, vLLM, and a Gateway API provider.
+  In RHOAI, KServe's LLMInferenceService controller renders the llm-d topology
+  (overlay 0011) using RHAIIS AIPCC vLLM images and downstream llm-d-router
+  images (overlay 0019). The upstream defaults shown here are a REFERENCE BASELINE
+  ("reference, not hardened"), not necessarily what RHOAI ships.
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                        │
+│                                                                              │
+│  [Inference Client]                                                          │
+│         │                                                                    │
+│         │ Port: 80/TCP                                                       │
+│         │ Protocol: HTTP (OpenAI-compatible: /v1/completions,                │
+│         │           /v1/chat/completions, /v1/responses, /v1/embeddings,     │
+│         │           /v1/messages, /inference/v1/generate)                    │
+│         │ Encryption: NONE (guide default)                                   │
+│         │ Auth: NONE (delegated to platform; in RHOAI: KServe/gateway auth)  │
+│         │ Tenant headers: x-llm-d-inference-fairness-id,                     │
+│         │                 x-llm-d-inference-objective (client-controlled)    │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (Gateway API)                                                       │
+│                                                                              │
+│  [llm-d-inference-gateway]  gateway.networking.k8s.io/v1 Gateway             │
+│  - Listener: HTTP :80, no TLS                                                │
+│  - allowedRoutes.namespaces.from: All  (any namespace may attach routes)     │
+│  - Service type: ClusterIP (forced on Istio / OCP agentgateway)              │
+│  - OpenShift: only Istio is a supported GatewayClass (overlay 0023)          │
+│    kgateway recipe deprecated; agentgateway OCP recipe not a support stmt    │
+│  [HTTPRoute] → backendRef InferencePool (inference.networking.k8s.io/v1)     │
+│  - requestTimeout: 0s or 300s                                                │
+│  - inferencePool.failureMode: FailOpen (EPP down → non-LLM-aware routing)    │
+│  - Coordinator route: x-llm-d-epp-profile header → documented SPOOFING       │
+│    BYPASS risk                                                               │
+│         │                                                                    │
+│         │ Port: 80/TCP → 8081/TCP (router svc extraServicePorts)             │
+│         │ Protocol: HTTP   Encryption: NONE   Auth: NONE                     │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  GUIDE NAMESPACE (e.g. llm-d-optimized-baseline) - NO NetworkPolicy          │
+│                                                                              │
+│  [Router / EPP pod]  (external llm-d-router Helm chart)                      │
+│  - Envoy sidecar (--concurrency 8 --log-level warn) or agentgateway sidecar  │
+│  - Envoy → EPP: gRPC ext-proc over localhost (or 9002/TCP in gateway mode)   │
+│    Encryption: none for agentgateway (secure-serving=false required),        │
+│    chart default otherwise. Auth: none                                       │
+│  - EPP /metrics: Prometheus auth DISABLED (monitoring.values.yaml)           │
+│  - EPP → vLLM /metrics 8000/TCP HTTP (scrape for load-aware routing)         │
+│         │                                                                    │
+│         │ Port: 8000/TCP                                                     │
+│         │ Protocol: HTTP (or gRPC/H2C VllmEngine/Generate when               │
+│         │           modelServers.protocol: grpc)                             │
+│         │ Encryption: NONE   Auth: NONE                                      │
+│         ▼                                                                    │
+│  ── Aggregated (optimized-baseline) ──────────────────────────────────────── │
+│  [vLLM model-server pod]  Deployment "decode"                                │
+│  - Port 8000/TCP: inference, /health (liveness), /v1/models (readiness),     │
+│    /metrics (PodMonitor)                                                     │
+│  - ServiceAccount: sa (automountServiceAccountToken: false)                  │
+│                                                                              │
+│  ── P/D disaggregation (DisaggregatedSet, LWS-backed) ────────────────────── │
+│  [Decode pod]                                                                │
+│   ├─ Routing sidecar (native sidecar, restartPolicy: Always)                 │
+│   │   Port 8000/TCP HTTP, --secure-serving=false (PLAINTEXT)                 │
+│   │   Image: ghcr.io/llm-d/llm-d-router-disagg-sidecar:v1.0.0                │
+│   │      │ 8000/TCP HTTP, no TLS, no auth  ───────────────►  [Prefill pod]   │
+│   │      │                                                   vLLM :8000      │
+│   │      ▼ 8200/TCP HTTP (in-pod)                                            │
+│   └─ Decode vLLM :8200                                                       │
+│          │                                                                   │
+│          │ Port: 5600/TCP + RDMA/RoCE                                        │
+│          │ Protocol: NIXL / UCX (KV-cache pull from prefill)                 │
+│          │ Encryption: NONE (fabric)   Auth: NONE                            │
+│          ▼                                                                   │
+│  [Prefill vLLM]  NIXL listener 5600/TCP                                      │
+│                                                                              │
+│  OpenShift P/D overlay (guides/pd-disaggregation/.../ocp) - PRIVILEGE ↑:     │
+│  - SR-IOV VFs + rdma/roce_gdr resources                                      │
+│  - Capabilities added: IPC_LOCK, SYS_RAWIO, NET_ADMIN, NET_RAW               │
+│  - hostPath mount: /var/model-cache (node model cache)                       │
+│  - No fixed runAsUser                                                        │
+│                                                                              │
+│  [llm-d-coordinator] (experimental)  ClusterIP 8080/TCP HTTP, no TLS/auth    │
+│  [render] (prefix-cache tokenizer)   ClusterIP 8000/TCP HTTP, no TLS/auth    │
+│  [agentic-api]  9000/TCP HTTP  →  [agentic-api-postgres] 5432/TCP            │
+│                 (password from Secret agentic-api-postgres, no TLS)          │
+│  [redis] (async multitenant)  6379/TCP, no TLS, no auth                      │
+│  [mooncake-master(-store)]    8700 or 50051, 8080, 8702/9003 RPC/HTTP, none  │
+│  [otel-collector / jaeger]    4317 gRPC, 4318 HTTP, 16686 UI, no TLS         │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  SERVICE MESH (Istio mTLS STRICT) - ModelExpress P2P guide only              │
+│                                                                              │
+│  [modelexpress-server]  8001/TCP gRPC                                        │
+│  - PeerAuthentication: STRICT                                                │
+│  - AuthorizationPolicy ALLOW only:                                           │
+│      principal sa/modelexpress-p2p-nvidia-gpu-vllm-sa                        │
+│  - Purpose: P2P GPU weight-transfer metadata broker                          │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  PLATFORM SERVICES (OpenShift)                                               │
+│                                                                              │
+│  [Prometheus user workload] ──HTTP, auth disabled──► EPP /metrics            │
+│                                                                              │
+│  [KEDA operator]                                                             │
+│         │ Port: 9091/TCP   Protocol: HTTPS                                   │
+│         │ Encryption: TLS (CA = service-ca.crt from token Secret)            │
+│         │ Auth: Bearer SA token (keda-epp-metrics-reader-token)              │
+│         ▼                                                                    │
+│  [thanos-querier.openshift-monitoring.svc]  RBAC: cluster-monitoring-view    │
+│                                                                              │
+│  [KEDA / HPA] ──HTTPS 6443/TCP, TLS, KEDA SA──► Kubernetes API (scale)       │
+│  (Kimi K3.1 guide: EPP metrics data source insecureSkipVerify: true)         │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES (Egress)                                                  │
+│                                                                              │
+│  [huggingface.co]  443/TCP HTTPS, TLS (system CA), Bearer HF_TOKEN           │
+│    - Model weight download from model-server pods (Secret llm-d-hf-token)    │
+│  [github.com, pypi, download.pytorch.org, apt.repos.intel.com, nvcr.io]      │
+│    - 443/TCP HTTPS, BUILD-TIME ONLY (image builds), no auth                  │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary (from guide manifests; cluster-scoped objects collide across
+multi-namespace installs):
+- ClusterRole: fma-node-viewer
+  - API Groups: ""   Resources: nodes   Verbs: get, list, watch
+- ClusterRole: kube-state-metrics-deployments
+  - API Groups: apps   Resources: deployments   Verbs: list, watch
+  - ClusterRoleBinding kube-state-metrics-deployments → SA kube-state-metrics (monitoring)
+- ClusterRole: cluster-monitoring-view (OCP built-in)
+  - ClusterRoleBinding keda-epp-metrics-reader-monitoring-view → SA keda-epp-metrics-reader
+- ClusterRoleBinding: wva-metrics-auth-rolebinding (patched role) → SA wva-controller-manager (llm-d-autoscaler)
+- Role: interactive-pod-editor (guide ns) → SA interactive-pod
+  - API Groups: "", apps, discovery.k8s.io, gateway.networking.k8s.io,
+    rbac.authorization.k8s.io, leaderworkersets, telemetry.istio.io,
+    monitoring.coreos.com, inference.networking.k8s.io, llm-d.ai, serving.kserve.io
+  - Resources: pods, secrets, configmaps, services, serviceaccounts, namespaces,
+    deployments, gateways, httproutes, roles, rolebindings, clusterroles,
+    clusterrolebindings, ...
+  - Verbs: get, list, watch, create, update, patch, delete
+  - RISK: full CRUD on Secrets + RBAC write → privilege-escalation surface
+- Role: fma-launcher-pod-state-writer   Resources: pods   Verbs: get, patch
+- Role: modelexpress-metadata (guide ns) → SA modelexpress
+  - API Groups: modelexpress.nvidia.com, ""   Resources: modelmetadatas,
+    modelcacheentries (+status), configmaps   Verbs: full CRUD
+
+Service Mesh Configuration:
+- Istio mTLS: ONLY for ModelExpress (PeerAuthentication STRICT + AuthorizationPolicy)
+- All other hops (Gateway → router → vLLM, sidecar → prefill, NIXL KV transfer)
+  are plaintext in the upstream guides
+- No NetworkPolicies are shipped by any guide
+
+Authentication & Authorization:
+- Gateway / router inference APIs (POST): NONE in guides; delegated to platform
+- Routing sidecar → vLLM: NONE (--secure-serving=false)
+- Router /metrics (GET): DISABLED (prometheus.auth.enabled: false)
+- modelexpress-server :8001: Istio mTLS + AuthorizationPolicy ALLOW-list
+- Thanos Querier (OCP): Bearer SA token, cluster-monitoring-view
+- x-llm-d-epp-profile header route: NONE, client-controlled → documented bypass
+
+Secrets:
+- llm-d-hf-token (Opaque, HF_TOKEN) - HuggingFace download; manual; no rotation;
+  referenced by about 135 manifests
+- keda-epp-metrics-reader-token (kubernetes.io/service-account-token) - KEDA →
+  Thanos bearer + service-ca.crt; long-lived SA token; no rotation
+- wva-epp-metrics-token (kubernetes.io/service-account-token) - WVA EPP metrics read
+- agentic-api-postgres (Opaque: password, database-url) - openssl rand -hex 16
+- prometheus-tls-cert / prometheus-web-tls (kubernetes.io/tls) - self-signed CA,
+  RSA 2048, SHA-256, generated by generate-prometheus-tls-certs.sh; no rotation
+- squid-ca-public-cert (CA bundle) - coordinator egress proxy; manual
+
+Multi-Tenancy:
+- Boundary: one guide instance per namespace; within a pool, logical tenants via
+  x-llm-d-inference-fairness-id and InferenceObjective priority bands
+- Fairness and priority only, NOT isolation; tenant/priority headers are
+  client-controlled and unauthenticated (any caller can claim premium priority)
+- Shared prefix KV cache across tenants in one pool (timing side-channel potential)
+- No ResourceQuota / LimitRange shipped
+
+FIPS / Build Posture (upstream images - NOT used in RHOAI, overlay 0019):
+- Dockerfile.cpu: ubuntu:25.10 system OpenSSL (not FIPS-validated); uv via curl | sh;
+  UV_INDEX_STRATEGY=unsafe-best-match (dependency-confusion exposure)
+- Dockerfile.xpu: thin layer on vllm/vllm-openai-xpu:v0.30.0 + LMCache v0.5.0
+- Dockerfile.rdma-tools: nvcr.io CUDA 13.0.2 UBI9, diagnostics only
+- No Konflux, no rpms.lock.yaml, no Hermeto: all build layers non-hermetic
+- No TLS server code in repo
+
+Key Security Observations:
+1. Plaintext everywhere by default: Gateway :80, sidecar --secure-serving=false,
+   NIXL 5600 over fabric.
+2. failureMode: FailOpen keeps traffic flowing when EPP is down (availability
+   over LLM-aware routing).
+3. Gateway allows routes from all namespaces; no NetworkPolicies.
+4. OCP P/D overlay adds IPC_LOCK, SYS_RAWIO, NET_ADMIN, NET_RAW + hostPath.
+5. interactive-pod Role can read Secrets and write RBAC in its namespace.
+6. Good patterns: modelserver SA token automount disabled; ModelExpress mTLS
+   allow-list; agentgateway OCP params drop ALL caps, read-only rootfs,
+   runAsNonRoot, RuntimeDefault seccomp; KEDA → Thanos over HTTPS + bearer.

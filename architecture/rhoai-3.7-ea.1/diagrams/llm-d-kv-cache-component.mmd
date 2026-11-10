@@ -1,0 +1,60 @@
+graph TB
+    subgraph Repo["llm-d-kv-cache (library + sidecar + utility, no operator, no CRDs)"]
+        subgraph GoLib["Go indexer library (linked into EPP scheduler, not its own process)"]
+            Indexer["pkg/kvcache<br/>Indexer / KVBlockScorer<br/>GetPodScores"]
+            KVBlock["pkg/kvcache/kvblock<br/>Index backends: LRU, Ristretto, Redis/Valkey<br/>Token processor: FNV-64a + CBOR"]
+            KVEvents["pkg/kvevents<br/>ZeroMQ SUB pool<br/>msgpack decode, FNV-32a shards"]
+            Tokenization["pkg/tokenization<br/>UdsTokenizer gRPC client"]
+            Telemetry["pkg/telemetry<br/>OTLP/gRPC tracing"]
+        end
+
+        subgraph TokImg["Image: odh-llm-d-kv-cache-rhel9"]
+            UDSTok["UDS tokenizer sidecar - Python<br/>tokenization.TokenizationService<br/>unix:///tmp/tokenizer/tokenizer-uds.socket<br/>/healthz on 8082/TCP"]
+        end
+
+        subgraph EvictImg["Image: odh-llm-d-kv-pvc-evictor-rhel9"]
+            Evictor["PVC evictor - Go<br/>Deployment, 1 replica<br/>cleanup 85% / target 70%"]
+        end
+
+        PyEvictor["PVC evictor - Python<br/>legacy, not built by Tekton"]
+        FSBackend["llmd_fs_backend<br/>vLLM OffloadingConnector FS tier<br/>upstreamed into vLLM"]
+        Examples["examples/* + vllm-setup-helm<br/>demo kv-cache-manager :8080<br/>upstream only, not shipped"]
+    end
+
+    Indexer -->|tokenize prompt| Tokenization
+    Indexer -->|block keys lookup| KVBlock
+    KVEvents -->|BlockStored / BlockRemoved| KVBlock
+    Indexer -.->|spans| Telemetry
+    Tokenization -->|gRPC over UDS| UDSTok
+
+    EPP["llm-d EPP scheduler<br/>precise-prefix-cache-scorer"] -->|imports + calls GetPodScores| Indexer
+    KServe["KServe LLMInferenceService controller"] -->|injects sidecar + WithUdsTokenizerConfig| UDSTok
+    KServe -.->|configures| EPP
+
+    VLLM["vLLM pods<br/>RHAIIS / llm-d runtime"] -->|KVEvents ZMQ PUB 5557/TCP| KVEvents
+    VLLM -->|writes offloaded .bin blocks| PVC[("Shared KV-cache PVC<br/>/kv-cache")]
+    FSBackend -.->|runs inside| VLLM
+    Evictor -->|statfs, stat atime, unlink| PVC
+    Evictor -.->|optional BlockRemoved ZMQ PUB| KVEvents
+
+    UDSTok -->|HTTPS 443 tokenizer download| HF["Hugging Face Hub / ModelScope"]
+    KVBlock -.->|optional RESP 6379| Redis["Redis / Valkey"]
+    Telemetry -.->|OTLP/gRPC 4317 insecure| OTel["OpenTelemetry Collector"]
+
+    style Indexer fill:#4a90e2
+    style KVBlock fill:#4a90e2
+    style KVEvents fill:#4a90e2
+    style Tokenization fill:#4a90e2
+    style Telemetry fill:#4a90e2
+    style UDSTok fill:#4a90e2
+    style Evictor fill:#4a90e2
+    style PyEvictor fill:#cccccc,stroke-dasharray: 5 5
+    style FSBackend fill:#cccccc,stroke-dasharray: 5 5
+    style Examples fill:#cccccc,stroke-dasharray: 5 5
+    style EPP fill:#7ed321
+    style KServe fill:#7ed321
+    style VLLM fill:#7ed321
+    style PVC fill:#f5a623
+    style HF fill:#e8e8e8
+    style Redis fill:#e8e8e8
+    style OTel fill:#e8e8e8

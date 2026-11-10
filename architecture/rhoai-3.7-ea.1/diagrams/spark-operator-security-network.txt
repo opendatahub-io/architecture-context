@@ -1,0 +1,193 @@
+SPARK OPERATOR - SECURITY NETWORK DIAGRAM (RHOAI 3.7-ea.1)
+Source: architecture/rhoai-3.7-ea.1/spark-operator.md
+Repo:   red-hat-data-services/spark-operator @ fef8c2a (rhoai-3.7-ea.1), operand 2.5.1
+Generated: 2026-11-10
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  PLATFORM OPERATOR TIER                                                       │
+│                                                                               │
+│  [opendatahub-operator / rhods-operator]                                      │
+│   - Deploys spark-operator-module-controller-manager                          │
+│   - Creates SparkOperator/default-sparkoperator (cluster-scoped singleton)    │
+│   - Injects APPLICATIONS_NAMESPACE, ODH_MODULE_OPERATOR_PLATFORM_TYPE,        │
+│     RELATED_IMAGE_ODH_SPARK_OPERATOR_IMAGE                                    │
+│         │                                                                     │
+│         │ Port: 6443/TCP   Protocol: HTTPS   Encryption: TLS 1.2+             │
+│         │ Auth: ServiceAccount token                                          │
+│         ▼                                                                     │
+│  [spark-operator-module-controller-manager]                                   │
+│   - Image: odh-spark-operator-module-controller (ubi9/ubi-minimal-pqc)        │
+│   - ServiceAccount: spark-operator-module-controller-manager                  │
+│   - Ports: 8081/TCP health (HTTP, no auth); no Service; no explicit metrics   │
+│   - Renders /opt/manifests-template (config/overlays/rhoai) and applies via   │
+│     server-side apply (field owner spark-operator-module-controller)          │
+│   - !! RBAC is cluster-admin-equivalent (unscoped create on                   │
+│        clusterrolebindings + bind/escalate on named roles)                    │
+│         │                                                                     │
+│         │ Port: 6443/TCP   Protocol: HTTPS   Encryption: TLS 1.2+             │
+│         │ Auth: ServiceAccount token                                          │
+│         ▼                                                                     │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  CLUSTER CONTROL PLANE                                                        │
+│                                                                               │
+│  [Kubernetes API Server]  6443/TCP HTTPS TLS 1.2+                             │
+│  [apiservers.config.openshift.io/cluster]  TLS security profile source        │
+│  [OpenShift service-ca]  issues metrics serving certs + CA bundle             │
+│         │                                                                     │
+│         │ Admission callback                                                  │
+│         │ Port: 443/TCP (Service) → 9443/TCP (pod)                            │
+│         │ Protocol: HTTPS                                                     │
+│         │ Encryption: TLS, cluster TLS profile (min version/ciphers/curves)   │
+│         │ Auth: caBundle-pinned server cert (self-signed CA)                  │
+│         │ Policy: failurePolicy Fail; namespaceSelector = jobNamespaces       │
+│         │         (default ["default"]); pod objectSelector                   │
+│         │         sparkoperator.k8s.io/launched-by-spark-operator=true        │
+│         ▼                                                                     │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  OPERATOR NAMESPACE: redhat-ods-applications                                  │
+│  NetworkPolicies: ingress 9443 any source, 8081 probes, 8080 monitoring only; │
+│                   EGRESS ALLOW-ALL (spark-operator-allow-egress, ADR-0016)    │
+│                                                                               │
+│  [spark-operator-webhook]   (odh-spark-operator image, "webhook start")       │
+│   - ServiceAccount: spark-operator-webhook                                    │
+│   - 9443/TCP HTTPS  admission: /mutate--v1-pod,                               │
+│       /mutate-sparkoperator-k8s-io-v1beta2-sparkapplication,                  │
+│       /mutate-sparkoperator-k8s-io-v1beta2-scheduledsparkapplication,         │
+│       /mutate-sparkoperator-k8s-io-v1alpha1-sparkconnect,                     │
+│       /validate-... (same three kinds), /convert                              │
+│   - 8080/TCP HTTPS /metrics  (service-CA cert, NO authn/authz filter)         │
+│   - 8081/TCP HTTP  /healthz /readyz (no auth)                                 │
+│   - Cert: self-signed RSA-2048 CA + server cert, NotAfter = now + 10 years,   │
+│     regenerated when < 180 days remain; stored in                             │
+│     Secret spark-operator-webhook-certs; caBundle patched by controllers      │
+│                                                                               │
+│  [spark-operator-controller]   (odh-spark-operator image, "controller start") │
+│   - ServiceAccount: spark-operator-controller                                 │
+│   - Watches all namespaces (--namespaces= empty)                              │
+│   - Runs spark-submit in-process (OpenJDK 17, PySpark 4.0.4, catatonit PID 1) │
+│   - 8080/TCP HTTPS /metrics (service-CA cert, NO authn/authz filter)          │
+│   - 8081/TCP HTTP  /healthz /readyz (no auth)                                 │
+│   - Feature gates: OperandNetworkPolicy=true (RHOAI); RestSubmitter=false     │
+│         │                                                                     │
+│         │ Port: 6443/TCP  Protocol: HTTPS  Encryption: TLS (JVM / Go)         │
+│         │ Auth: controller SA token                                           │
+│         │ Action: create driver pods, ConfigMaps, UI Services, PDBs,          │
+│         │         SparkConnect pods/Services, operand NetworkPolicies         │
+│         ▼                                                                     │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  SPARK OPERAND PODS (operator ns or any user namespace)                       │
+│                                                                               │
+│  [Spark driver pod]                                                           │
+│   - ServiceAccount: spark-operator-spark (operator ns) or user SA             │
+│   - 4040/TCP HTTP Spark UI (no auth)  via <app>-ui-svc ClusterIP              │
+│   - Creates executors: 6443/TCP HTTPS, driver SA token                        │
+│         │                                                                     │
+│         │ Port: 7078, 7079/TCP   Protocol: Spark RPC                          │
+│         │ Encryption: NONE (default)   Auth: NONE                             │
+│         ▼                                                                     │
+│  [Spark executor pods]                                                        │
+│                                                                               │
+│  [SparkConnect server pod + Service]  (per SparkConnect CR)                   │
+│   - 15002/TCP gRPC, 7078/7079 Spark RPC, 4040 HTTP UI                         │
+│   - Encryption: NONE configured by operator   Auth: NONE (NetworkPolicy only) │
+│                                                                               │
+│  Spark pod NetworkPolicy peers (operator ns; user ns via OperandNetworkPolicy)│
+│   - 7078/7079/4040: any pod in operator ns + OpenShift ingress policy group   │
+│   - 15002: same namespace + dashboard-labelled namespaces' workbench pods     │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  CLIENTS                                                                      │
+│                                                                               │
+│  [Prometheus] (namespaces labelled network.openshift.io/policy-group:         │
+│               monitoring)                                                     │
+│     → 8080/TCP HTTPS, TLS verified via service-ca.crt,                        │
+│       serverName *-metrics.redhat-ods-applications.svc, Auth: NONE            │
+│                                                                               │
+│  [Workbench / Kubeflow SDK] (opendatahub.io/dashboard namespaces)             │
+│     → 6443/TCP HTTPS user token: create SparkConnect / SparkApplication       │
+│     → 15002/TCP gRPC plaintext, no auth: Spark Connect session                │
+│                                                                               │
+│  [Browser] (opt-in only; no Ingress in RHOAI manifests)                       │
+│     → 80/443 Spark UI Ingress, optional TLS, edge per IngressClass → 4040     │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  EGRESS / EXTERNAL SERVICES                                                   │
+│                                                                               │
+│  [Arbitrary user dependency URLs / data sources]                              │
+│   - Port/protocol: any; Auth: per application                                 │
+│   - Reached from controller (spark-submit) and Spark pods                     │
+│  [Spark submitter service] (optional, RestSubmitter gate DISABLED)            │
+│   - HTTPS, TLS >= 1.2 + cluster profile, optional mTLS client cert            │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- ClusterRole: spark-operator-module-manager-role  (SA spark-operator-module-controller-manager)
+  - components.platform.opendatahub.io sparkoperators(+status,finalizers): list, watch, get, patch, update
+    (get/update/patch limited to default-sparkoperator)
+  - rbac.authorization.k8s.io clusterroles, clusterrolebindings, roles, rolebindings:
+    create, delete, get, list, patch, update, watch   <-- create NOT name-scoped
+  - rbac.authorization.k8s.io clusterroles, roles (named list): bind, escalate
+  - apiextensions.k8s.io customresourcedefinitions: create, get, list, patch, update, watch
+  - admissionregistration.k8s.io mutating/validatingwebhookconfigurations: CRUD (writes by resourceNames)
+  - "" configmaps, services, serviceaccounts: CRUD; namespaces: get, list, watch
+  - apps deployments: CRUD; networking.k8s.io networkpolicies: create, delete, get, list, patch, watch
+  - monitoring.coreos.com podmonitors: CRUD; coordination.k8s.io leases: CRUD
+  - cert-manager.io certificates, issuers: CRUD  (latent - no RHOAI overlay uses cert-manager)
+- ClusterRole: spark-operator-controller  (SA spark-operator-controller)
+  - "" pods: create, delete, get, list, update, watch
+  - "" services: create, delete, get, list, patch, update, watch
+  - "" configmaps: create, get, list, patch, update, watch; events: create, patch, update
+  - extensions, networking.k8s.io ingresses: create, delete, get, update
+  - networking.k8s.io networkpolicies (RHOAI patch): full CRUD
+  - policy poddisruptionbudgets: create, delete, get, list, watch
+  - sparkoperator.k8s.io sparkapplications: create, delete, get, list, watch
+  - sparkoperator.k8s.io scheduledsparkapplications, sparkconnects: get, list, watch
+  - sparkoperator.k8s.io */status, */finalizers: update
+  - apiextensions.k8s.io customresourcedefinitions: get
+- ClusterRole: spark-operator-webhook  (SA spark-operator-webhook)
+  - "" pods: list, watch; resourcequotas: list
+  - admissionregistration.k8s.io webhook configurations: list, watch, get, update
+  - sparkoperator.k8s.io sparkapplications, scheduledsparkapplications: get, list, watch
+- ClusterRole: spark-operator-tls-profile  (SAs controller + webhook)
+  - config.openshift.io apiservers: get, list, watch
+- Role (redhat-ods-applications): spark-operator-controller - leases
+- Role (redhat-ods-applications): spark-operator-webhook - secrets (resourceNames
+  spark-operator-webhook-certs), leases, events
+- Role (redhat-ods-applications): spark-role (SA spark-operator-spark) - pods, configmaps,
+  PVCs, services: full CRUD + deletecollection
+- Aggregatable end-user ClusterRoles: sparkapplication / scheduledsparkapplication
+  editor (full CRUD) and viewer (get, list, watch)
+
+Admission Control:
+- MutatingWebhookConfiguration + ValidatingWebhookConfiguration, failurePolicy: Fail
+- namespaceSelector: kubernetes.io/metadata.name In spec.spark.jobNamespaces (default ["default"])
+- !! Controller reconciles ALL namespaces; outside jobNamespaces Spark CRs bypass defaulting,
+     validation (DNS-1035, sparkConf, ResourceQuota) and driver/executor pod mutation
+- CRD conversion webhook /convert configured on single-version CRDs
+
+TLS Configuration:
+- Webhook, metrics server and REST submitter client follow the OpenShift APIServer TLS
+  profile (library-go cipher mapping); restart on profile change
+- Fallback: TLS 1.2 hardened off-OpenShift; Mozilla Intermediate on transient read errors;
+  denied/malformed reads fail startup
+- No InsecureSkipVerify found
+
+Secrets:
+- spark-operator-webhook-certs (Opaque) - webhook CA + server key/cert PEM; self-signed
+  RSA-2048, 10-year validity; regenerated when < 180 days remain (partial rotation)
+- spark-operator-controller-metrics-certs (kubernetes.io/tls) - service-ca, auto-rotate
+- spark-operator-webhook-metrics-certs (kubernetes.io/tls) - service-ca, auto-rotate
+- Submitter mTLS cert/key/CA (files, optional) - manual, no rotation
+
+FIPS:
+- Both images: CGO_ENABLED=1 GOEXPERIMENT=strictfipsruntime -tags "distro,strictfipsruntime"
+- OpenSSL from AIPCC CPU (RHEL 9.8) base / ubi9-minimal-pqc base
+- crypto/md5 used for resource-name hashing (non-security; may be flagged by scanners)
+- JVM (OpenJDK 17) crypto inherits RHEL crypto policy
+
+Key Security Observations:
+1. Module controller SA is effectively cluster-admin-equivalent.
+2. /metrics (8080) is HTTPS but unauthenticated; protected only by NetworkPolicy.
+3. Webhook cert is self-signed with 10-year validity (not service-ca / cert-manager).
+4. Admission scope (jobNamespaces) is narrower than controller scope (all namespaces).
+5. Operator pods have allow-all egress; spark-submit fetches arbitrary user URLs in a
+   shared multi-tenant process.
+6. SparkConnect gRPC 15002 and Spark RPC 7078/7079 are plaintext with no app-level auth.

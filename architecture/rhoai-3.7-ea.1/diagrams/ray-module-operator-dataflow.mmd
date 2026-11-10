@@ -1,0 +1,42 @@
+sequenceDiagram
+    participant Platform as Platform Operator<br/>(rhods-operator)
+    participant API as Kubernetes API<br/>6443/TCP HTTPS TLS1.2+
+    participant Module as ray-module-operator<br/>(manager)
+    participant FS as Local FS<br/>/opt/manifests to /tmp
+    participant Prom as Prometheus
+    participant KubeRay as kuberay-operator<br/>(operand)
+
+    Note over Platform,KubeRay: Flow 1: Module enablement and operand deployment
+    Platform->>API: Create Deployment ray-module-operator-controller-manager,<br/>Ray/default-ray (applicationsNamespace), ConfigMap odh-ray-config<br/>Auth: Platform SA token
+    API-->>Module: Watch events (Ray, ConfigMap odh-ray-config)<br/>HTTPS watch, Module SA token
+    alt applicationsNamespace not projected
+        Module->>API: Status ApplicationsNamespaceNotProjected, drop finalizer
+    else applicationsNamespace set
+        Module->>FS: Copy /opt/manifests/kuberay to /tmp/ray-module-manifests,<br/>rewrite params.env (RELATED_IMAGE_*) + namespace, kustomize render
+        FS-->>Module: Rendered operand objects (part-of=ray)
+        Module->>API: RESTMapper / CRD checks (SCC, cert-manager Issuer/Certificate)
+        API-->>Module: Present / absent (cert-manager absent = reconcile error)
+        Module->>API: SSA apply (field owner ray): CRDs, RBAC, SCC, Deployment,<br/>Services, webhooks, Issuer/Certificate, NetworkPolicy, ClusterRole ray
+        API-->>KubeRay: kuberay-operator Deployment scheduled
+        Module->>API: Read Deployments (DeploymentsAvailable), read ConfigMap (distribution)
+        Module->>API: Update Ray status (Ready, ProvisioningSucceeded, Degraded, releases)
+    end
+
+    Note over Platform,KubeRay: Flow 2: Removal / deletion
+    Platform->>API: Set managementState: Removed or delete default-ray<br/>Platform SA token
+    API-->>Module: Watch event (deletionTimestamp predicate)
+    Module->>API: Delete owned/labeled Deployments, ConfigMaps, Services, SAs,<br/>MutatingWebhookConfigurations, ClusterRoles/Bindings, GC, delete ClusterRole ray
+    Note right of Module: ray.io CRDs retained so user RayClusters/RayJobs survive
+    Module->>API: Remove finalizer platform.opendatahub.io/finalizer
+
+    Note over Platform,KubeRay: Flow 3: Metrics scrape (module operator)
+    Prom->>Module: GET /metrics 8443/TCP HTTPS TLS1.2+<br/>Bearer token
+    Module->>API: TokenReview + SubjectAccessReview<br/>Module SA token
+    API-->>Module: Allowed (get on /metrics)
+    Module-->>Prom: Prometheus metrics
+
+    Note over Platform,KubeRay: Flow 4: TLS profile change
+    Module->>API: GET config.openshift.io/v1 APIServer cluster<br/>bootstrap client, 10s timeout
+    API-->>Module: TLS security profile + adherence policy
+    API-->>Module: Watch APIServer: profile changed
+    Module->>Module: SecurityProfileWatcher cancels manager context, pod restarts with new TLS options

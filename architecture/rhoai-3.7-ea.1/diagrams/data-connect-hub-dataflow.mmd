@@ -1,0 +1,57 @@
+sequenceDiagram
+    autonumber
+    participant Client as Client / SDK / Dashboard
+    participant GW as odh-gateway<br/>443/TCP HTTPS / gRPC TLS
+    participant KRP as kube-rbac-proxy<br/>8443/TCP TLS service-CA
+    participant Rest as rest-service<br/>127.0.0.1:8080 HTTP
+    participant Flight as flight-service<br/>8443/TCP gRPC TLS 1.2+/1.3
+    participant K8s as Kubernetes API<br/>443/TCP HTTPS
+    participant PG as PostgreSQL metastore<br/>5432/TCP
+    participant Src as External data source<br/>PG / HTTPS / Bolt
+    participant Ctrl as dc-controller
+
+    rect rgb(230, 240, 255)
+    Note over Client,PG: Flow 1 - User manages a connection via REST
+    Client->>GW: HTTPS 443 /api/v1alpha1/data/connections<br/>Bearer token + X-Tenant-Id
+    GW->>KRP: HTTPS 8443 (re-encrypt, service-CA)<br/>Bearer token
+    KRP->>K8s: TokenReview + SAR (data-connections, verb by method)<br/>in X-Tenant-Id namespace
+    K8s-->>KRP: allowed
+    KRP->>Rest: HTTP loopback 8080<br/>x-remote-user (groups ignored)
+    Rest->>PG: SQL (optional TLS), password auth<br/>filter tenant_id
+    Rest->>K8s: Create/patch Secret for inline credentials<br/>REST SA
+    Rest-->>KRP: JSON response
+    KRP-->>GW: response
+    GW-->>Client: JSON response
+    end
+
+    rect rgb(230, 255, 230)
+    Note over Client,Src: Flow 2 - Data read via Arrow Flight
+    Client->>GW: gRPC/HTTP2 443 FlightService/GetFlightInfo, DoGet<br/>Bearer + X-Tenant-Id
+    GW->>Flight: gRPC 8443 TLS
+    Note right of Rest: REST may call Flight directly on 8443<br/>with REST SA token for /binary,<br/>/readiness, /test/credentials
+    Flight->>K8s: TokenReview + SAR get data-store<br/>(auth-delegator, 60s cache)
+    Flight->>PG: Load connection metadata<br/>DB password
+    Flight->>K8s: Read connection Secret (secret_ref)<br/>Flight SA
+    Flight->>Src: Query / fetch<br/>TLS if configured, per-connection creds
+    Src-->>Flight: rows / objects
+    Flight-->>GW: Arrow RecordBatch stream
+    GW-->>Client: Arrow RecordBatch stream
+    end
+
+    rect rgb(255, 245, 225)
+    Note over Ctrl,Flight: Flow 3 - Operator install and bootstrap
+    Ctrl->>K8s: Watch DataConnectService, read APIServer TLS profile,<br/>platform ConfigMap (controller SA)
+    Ctrl->>K8s: Apply Deployments, Services, NetworkPolicies,<br/>ClusterRoles/CRBs, HTTPRoute, ServiceMonitor
+    Ctrl->>K8s: Create InitDataConnectionType CRs
+    Ctrl->>KRP: HTTPS 8443 POST connection-types, POST /flights<br/>Controller SA bearer + X-Tenant-Id opendatahub
+    KRP->>Rest: HTTP loopback 8080
+    Rest->>Flight: gRPC 8443 DoAction (discovery / audit)<br/>REST SA token
+    end
+
+    rect rgb(245, 230, 255)
+    Note over Ctrl,K8s: Flow 4 - ODH dashboard connection migration
+    Ctrl->>K8s: Watch ConfigMaps opendatahub.io/connection-type<br/>and Secrets opendatahub.io/dashboard (cluster-wide)
+    Ctrl->>KRP: HTTPS 8443 create connection type / connection<br/>with secret_ref only (controller SA)
+    KRP->>Rest: HTTP loopback 8080
+    Ctrl->>K8s: Patch annotation dataconnecthub.opendatahub.io/synced=true
+    end

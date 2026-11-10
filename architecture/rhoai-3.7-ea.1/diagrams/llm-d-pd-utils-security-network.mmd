@@ -1,0 +1,75 @@
+graph TB
+    subgraph Workstation["OPERATOR WORKSTATION (user identity)"]
+        Op["Operator / AI Agent<br/>run-tests.py, benchmark_deployment.sh<br/>Auth: user kubeconfig<br/>No ServiceAccount / RBAC shipped"]
+    end
+
+    subgraph ControlPlane["CLUSTER CONTROL PLANE"]
+        API["Kubernetes API server<br/>6443/TCP HTTPS TLS 1.2+<br/>RBAC: user's own permissions"]
+        Kubelet["kubelet<br/>liveness/readiness probes"]
+    end
+
+    subgraph NS["Namespace: llm-d workload (no NetworkPolicy defined)"]
+        direction TB
+        subgraph ModelPod["llm-d model-server pod - label llm-d.ai/model"]
+            Gate["Preflight gate - pause mode<br/>8000/TCP (or 8200, auto-increment)<br/>HTTP plaintext, binds all interfaces<br/>NO AUTH - /info dumps ALL env vars<br/>/exit unpauses vLLM"]
+            VLLM["vllm serve<br/>8000/TCP after gate releases<br/>TLS/auth per llm-d config"]
+            TestListeners["Ad-hoc test listeners (during runs)<br/>perftest 18515+ | iperf3 5201<br/>sshd 22 root pubkey | etcd 2379/2380 HTTP<br/>nixlbench ASIO 12345"]
+        end
+        PeerPod["Peer llm-d pods 2..N<br/>same listeners"]
+        subgraph Bench["Legacy NIXL benchmark pods"]
+            NixlSrv["nixl-server Pod<br/>ZMQ PAIR 5555/TCP plaintext<br/>RoCE: 8000+1000*i per net1-* NIC<br/>SA: default, IPC_LOCK (RoCE)"]
+            NixlCli["nixl-client Pod"]
+            NodePort["Service nixl-server<br/>NodePort 30002 → 5555<br/>NO AUTH, every node IP"]
+        end
+    end
+
+    subgraph OtherNS["OTHER IN-CLUSTER WORKLOADS (untrusted)"]
+        AnyClient["Any pod with network reach<br/>to the model pod IP"]
+    end
+
+    subgraph Fabric["SHARED RDMA/RoCE FABRIC (Multus multi-nic-network)"]
+        RDMA["Secondary NICs<br/>nvidia.com/roce_gdr<br/>no tenant isolation"]
+    end
+
+    subgraph ExtSvc["EXTERNAL SERVICES (--install-deps / image build)"]
+        GitHub["github.com<br/>perftest, NIXL, UCX, gdrcopy, etcd,<br/>gRPC, protobuf, nccl-tests<br/>443/TCP TLS 1.2+, NO checksum"]
+        PyPI["PyPI<br/>443/TCP TLS 1.2+"]
+        Vendor["content.mellanox.com, developer.nvidia.com,<br/>nvcr.io - 443/TCP TLS 1.2+"]
+        GHCR["ghcr.io/llm-d/llm-d-pd-utils<br/>push via GHCR_TOKEN"]
+    end
+
+    Op -->|"HTTPS/6443<br/>TLS 1.2+<br/>kubeconfig (OIDC/token/cert)"| API
+    API -->|"exec / debug streams<br/>SPDY/WebSocket over TLS"| ModelPod
+    API -->|exec| PeerPod
+    Kubelet -->|"HTTP/8000<br/>plaintext, no auth<br/>catch-all 200"| Gate
+    Op -.->|"kubectl exec curl localhost:8000<br/>/info, /exit (loopback HTTP)"| Gate
+    Gate -->|"exit 0 then && vllm serve"| VLLM
+    PeerPod -->|"RDMA verbs 18515+ / TCP+UDP 5201<br/>no encryption, no auth"| TestListeners
+    PeerPod -->|"SSH/22<br/>RSA-2048 no passphrase<br/>StrictHostKeyChecking=no"| TestListeners
+    PeerPod -->|"HTTP/2379 etcd v3<br/>no auth"| TestListeners
+    NixlCli -->|"ZMQ 5555/TCP + UCX tcp/rc<br/>no encryption, no auth"| NixlSrv
+    NodePort --> NixlSrv
+    NixlSrv -.-> RDMA
+    NixlCli -.-> RDMA
+    PeerPod -.-> RDMA
+    AnyClient -.->|"HTTP/8000 to pod IP<br/>no auth: read env via /info,<br/>trigger /exit"| Gate
+    ModelPod -->|"HTTPS/443<br/>source & package downloads"| GitHub
+    ModelPod -->|HTTPS/443| PyPI
+    Bench -.->|"image build: HTTPS/443"| Vendor
+    Bench -.->|"CI release image"| GHCR
+
+    classDef workstation fill:#e1ecf7,stroke:#4a90e2,stroke-width:2px
+    classDef control fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef internal fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef risk fill:#f8cecc,stroke:#b85450,stroke-width:3px
+    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef fabric fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef untrusted fill:#f9f9f9,stroke:#999,stroke-width:2px,stroke-dasharray: 5 5
+
+    class Op workstation
+    class AnyClient untrusted
+    class API,Kubelet control
+    class VLLM,PeerPod,NixlCli internal
+    class Gate,TestListeners,NodePort,NixlSrv risk
+    class GitHub,PyPI,Vendor,GHCR externalservice
+    class RDMA fabric

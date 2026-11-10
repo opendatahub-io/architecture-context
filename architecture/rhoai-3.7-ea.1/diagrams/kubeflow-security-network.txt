@@ -1,0 +1,215 @@
+kubeflow (RHOAI 3.7-ea.1) - Security Network Diagram
+Source: architecture/rhoai-3.7-ea.1/kubeflow.md  (commit 65880e0, branch rhoai-3.7-ea.1)
+Components: odh-kf-notebook-controller (upstream) + odh-notebook-controller (RHOAI extension, admission webhooks)
+
+========================================================================================
+ PATH A: USER -> WORKBENCH
+========================================================================================
+┌──────────────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                                │
+│                                                                                      │
+│  [User Browser]                                                                      │
+│         │ Port: 443/TCP   Protocol: HTTPS   Encryption: TLS                          │
+│         │ Auth: Platform auth at gateway (gateway-level, not this component)         │
+│         ▼                                                                            │
+├──────────────────────────────────────────────────────────────────────────────────────┤
+│  INGRESS - namespace openshift-ingress (owned by rhods-operator)                     │
+│                                                                                      │
+│  [Gateway data-science-gateway]  (Gateway API, gateway.networking.k8s.io/v1)         │
+│  - TLS terminated at Gateway (SIMPLE)                                                │
+│  - Per-notebook HTTPRoute (stored in CONTROLLER ns), path /notebook/<ns>/<name>      │
+│  - Cross-ns backend allowed by ReferenceGrant notebook-httproute-access (user ns)    │
+│  - Gateway selected via odh-notebook-controller-config `ingresses` +                 │
+│    namespace annotation opendatahub.io/ingress-name (default data-science-gateway)   │
+│         │                                                                            │
+│         ├── inject-auth=true ─────────────────────────────┐                          │
+│         │  Port: 8443/TCP  Protocol: HTTPS                 │                          │
+│         │  Encryption: TLS (service-ca <nb>-kube-rbac-proxy-tls, cluster TLS flags)  │
+│         │  Auth: Bearer token / X-Auth-Request-User/Groups │                          │
+│         │                                                  ▼                          │
+│         │                                                                            │
+│         └── inject-auth absent ── Port: 8888/TCP  HTTP  Encryption: NONE             │
+│                                   Auth: NONE at notebook (relies on Gateway only)    │
+├──────────────────────────────────────────────────────────────────────────────────────┤
+│  USER NAMESPACE (Tenant / Data Science Project)                                      │
+│                                                                                      │
+│  [Service <nb>-kube-rbac-proxy]  ClusterIP 8443/TCP -> 8443                          │
+│  [Service <nb>]                  ClusterIP   80/TCP -> 8888  HTTP, no auth           │
+│                                                                                      │
+│  [Notebook Pod]  (StatefulSet, 1 replica, ServiceAccount: <nb>)                      │
+│   ├─ kube-rbac-proxy sidecar                                                         │
+│   │   - 8443/TCP TLS (min version/ciphers/curves from APIServer TLS profile;         │
+│   │     X25519 / X25519MLKEM768 dropped when fips140.Enabled())                      │
+│   │   - 8444/TCP health                                                              │
+│   │   - AuthN: TokenReview  AuthZ: SAR `get kubeflow.org/notebooks/<name>` in <ns>   │
+│   │         │ Port: 6443/TCP HTTPS TLS -> kube-apiserver                             │
+│   │         │ Identity: SA <nb> via ClusterRoleBinding to system:auth-delegator      │
+│   │         │                                                                        │
+│   │         │ Port: 8888/TCP  HTTP  Encryption: None (loopback 127.0.0.1)            │
+│   │         ▼                                                                        │
+│   └─ Jupyter / IDE container  :8888                                                  │
+│                                                                                      │
+│  NetworkPolicies (created per notebook):                                             │
+│   - <nb>-ctrl-np        : ingress 8888 from ENTIRE controller namespace (over-broad) │
+│   - kube-rbac-proxy NP  : ingress 8443 from ANY source (auth enforced by proxy)      │
+│   - <nb>-egress-np      : egress allow-all                                           │
+│         │                                                                            │
+│         │ Port: any   Protocol: any   (egress unrestricted)                          │
+│         ▼                                                                            │
+├──────────────────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL / ANY DESTINATION                                                          │
+└──────────────────────────────────────────────────────────────────────────────────────┘
+
+========================================================================================
+ PATH B: CONTROL PLANE (Admission, Reconciliation, Culling, Metrics)
+========================================================================================
+┌──────────────────────────────────────────────────────────────────────────────────────┐
+│  CLUSTER CONTROL PLANE                                                               │
+│                                                                                      │
+│  [ODH Dashboard / user] ── 6443/TCP HTTPS TLS 1.2+, user bearer ──> [kube-apiserver] │
+│                                                                                      │
+│  [kube-apiserver]                                                                    │
+│         │ Port: 443/TCP (Service) -> 8443/TCP                                        │
+│         │ Protocol: HTTPS   Encryption: TLS per cluster APIServer profile            │
+│         │   (fallback TLS 1.2 + Mozilla Intermediate ciphers)                        │
+│         │ Server cert: service-ca odh-notebook-controller-webhook-cert               │
+│         │ Auth: Kubernetes admission (caller = kube-apiserver; NP allows 8443 any)   │
+│         │ failurePolicy: Fail (both webhooks) -> fail-closed Notebook admission      │
+│         ▼                                                                            │
+├──────────────────────────────────────────────────────────────────────────────────────┤
+│  CONTROLLER NAMESPACE (applications namespace, deployed by rhods-operator)           │
+│                                                                                      │
+│  [odh-notebook-controller]  SA: odh-notebook-controller-manager                      │
+│  - 8443/TCP webhook HTTPS: /mutate-notebook-v1, /validate-notebook-v1                │
+│  - 8080/TCP metrics HTTPS (Service odh-notebook-controller-service 8443 -> 8080)     │
+│      cert: odh-notebook-controller-metrics-tls; Bearer -> TokenReview + SAR          │
+│      NP: 8080 from monitoring namespaces only                                        │
+│  - 8081/TCP /healthz /readyz HTTP, no auth                                           │
+│  - 1 replica, leader election off, maxUnavailable 100% (no HA)                       │
+│  - Refuses to start under unknown TLS posture (tlsAdherence, OCP 4.22+)              │
+│                                                                                      │
+│  [notebook-controller]  SA: notebook-controller-service-account                      │
+│  - 8443/TCP metrics HTTPS, cert kf-notebook-controller-metrics-tls,                  │
+│      Bearer -> TokenReview + SAR                                                     │
+│  - 8081/TCP /healthz /readyz HTTP, no auth                                           │
+│  - Exits on APIServer TLS profile change (restart applies new settings)              │
+│         │                                                                            │
+│         │ Both controllers -> kube-apiserver                                         │
+│         │ Port: 6443/TCP  Protocol: HTTPS/WSS  Encryption: TLS 1.2+                  │
+│         │ Auth: ServiceAccount token                                                 │
+│         │                                                                            │
+│         │ notebook-controller CullingReconciler (ENABLE_CULLING=true) ->             │
+│         │ http://<nb>.<ns>.svc.cluster.local/notebook/<ns>/<nb>/api/kernels          │
+│         │ Port: 80/TCP -> 8888   Protocol: HTTP   Encryption: NONE   Auth: NONE      │
+│         │ Timeout 10s; poll every IDLENESS_CHECK_PERIOD (1 min); idle 1440 min       │
+│         ▼                                                                            │
+│  [Notebook Service <nb>] (user namespace)                                            │
+├──────────────────────────────────────────────────────────────────────────────────────┤
+│  openshift-monitoring                                                                │
+│                                                                                      │
+│  [Prometheus] ── ServiceMonitor ── 8443/TCP HTTPS, TLS (service-ca CA),              │
+│                                    Bearer -> TokenReview/SAR ──> both controllers    │
+└──────────────────────────────────────────────────────────────────────────────────────┘
+
+----------------------------------------------------------------------------------------
+Exposed Endpoints Summary
+----------------------------------------------------------------------------------------
+| Endpoint                          | Port            | Proto | TLS                 | Auth                     |
+|-----------------------------------|-----------------|-------|---------------------|--------------------------|
+| /mutate-notebook-v1               | 443->8443/TCP   | HTTPS | cluster TLS profile | K8s admission            |
+| /validate-notebook-v1             | 443->8443/TCP   | HTTPS | cluster TLS profile | K8s admission            |
+| /metrics (odh-notebook-controller)| 8443->8080/TCP  | HTTPS | cluster TLS profile | TokenReview + SAR        |
+| /metrics (notebook-controller)    | 8443/TCP        | HTTPS | cluster TLS profile | TokenReview + SAR        |
+| /healthz, /readyz (both)          | 8081/TCP        | HTTP  | none                | none                     |
+| /notebook/{ns}/{name} (auth)      | 443 GW -> 8443  | HTTPS | TLS GW + service-ca | kube-rbac-proxy SAR      |
+| /notebook/{ns}/{name} (no auth)   | 443 GW -> 8888  | HTTP  | TLS at GW only      | NONE at backend          |
+| /convert                          | n/a             | HTTPS | -                   | INACTIVE (strategy None) |
+
+----------------------------------------------------------------------------------------
+RBAC Summary
+----------------------------------------------------------------------------------------
+- ClusterRole: notebook-controller-role  (SA notebook-controller-service-account)
+  - kubeflow.org notebooks, notebooks/finalizers, notebooks/status: *
+  - apps statefulsets: *          - "" services: *
+  - "" pods: delete, get, list, watch
+  - "" events: create, get, list, patch, watch
+  - networking.istio.io virtualservices: *   (unused: USE_ISTIO=false on OpenShift)
+- ClusterRole: notebook-controller-metrics-auth -> tokenreviews, subjectaccessreviews: create
+- ClusterRole: notebook-controller-openshift-config-reader -> config.openshift.io apiservers: get, list, watch
+
+- ClusterRole: odh-notebook-controller-manager-role  (SA odh-notebook-controller-manager)
+  - "" configmaps, secrets, serviceaccounts, services: create, get, list, patch, update, watch  (cluster-wide Secrets)
+  - "" events: create, patch;  namespaces: get, list, watch
+  - tokenreviews / subjectaccessreviews: create
+  - DSPA: get, list, watch;  DSPA/api: create, delete, get, patch, update
+  - gateway.networking.k8s.io gateways: get, list, watch
+  - gateway.networking.k8s.io httproutes, referencegrants: create, delete, get, list, patch, update, watch
+  - image.openshift.io imagestreams; route.openshift.io routes: get, list, watch
+  - kubeflow.org notebooks: get, list, patch, update, watch; finalizers: patch, update; status: get
+  - networking.k8s.io networkpolicies: create, delete, get, list, patch, update, watch
+  - oauth.openshift.io oauthclients: delete, get, list, patch, update, watch (legacy cleanup)
+  - rbac clusterrolebindings, rolebindings: create, delete, get, list, patch, update, watch  [ESCALATION-ADJACENT]
+  - rbac roles: create, get, list, patch, update, watch;  clusterroles: get
+  - rbac clusterroles/mlflow-operator-mlflow-integration: bind                               [ESCALATION-ADJACENT]
+- ClusterRole: odh-notebook-controller-openshift-config-reader -> apiservers, proxies: get, list, watch
+- Role: odh-notebook-controller-leader-election-role (controller ns) -> configmaps, leases, events
+
+Runtime bindings created per notebook (SA <nb>):
+- ClusterRoleBinding <nb>-rbac-<ns>-auth-delegator -> system:auth-delegator (kube-rbac-proxy TokenReview/SAR)
+- RoleBinding elyra-pipelines-<nb> (user ns)     -> Role ds-pipeline-user-access-dspa   (SET_PIPELINE_RBAC=true)
+- RoleBinding <nb>-mlflow (user ns)              -> ClusterRole mlflow-operator-mlflow-integration (MLFLOW_ENABLED)
+
+User-facing aggregated roles: *-kubeflow-notebooks-edit/-view/-admin, odh-notebook-controller-notebooks-edit/-view/-admin
+
+----------------------------------------------------------------------------------------
+Service Mesh Configuration
+----------------------------------------------------------------------------------------
+- None. No PeerAuthentication / AuthorizationPolicy. Istio VirtualServices disabled (USE_ISTIO=false).
+- Transport security relies on service-ca TLS (webhook, metrics, kube-rbac-proxy) and Gateway TLS.
+
+----------------------------------------------------------------------------------------
+Secrets
+----------------------------------------------------------------------------------------
+- odh-notebook-controller-webhook-cert (kubernetes.io/tls) - webhook serving cert, service-ca, auto-rotate
+- odh-notebook-controller-metrics-tls  (kubernetes.io/tls) - ODH metrics cert, service-ca, auto-rotate
+- kf-notebook-controller-metrics-tls   (kubernetes.io/tls) - KF metrics cert, service-ca, auto-rotate
+- <nb>-kube-rbac-proxy-tls             (kubernetes.io/tls) - per-notebook proxy cert, service-ca, auto-rotate
+- ds-pipeline-config (Opaque, per ns)  - Elyra runtime config incl. S3 access/secret keys COPIED from the
+                                         DSPA credentials Secret; owner = DSPA; resynced on reconcile, no rotation
+- Controller cache strips Secret `data` and non-own ConfigMap `data`; reads bypass cache.
+
+----------------------------------------------------------------------------------------
+Admission Webhooks (failurePolicy: Fail)
+----------------------------------------------------------------------------------------
+- Mutating notebooks.opendatahub.io (kubeflow.org/v1 Notebook CREATE/UPDATE):
+  reconciliation lock, ImageStream image resolution, CA bundle / pipeline-runtime-images /
+  ds-pipeline-config / Feast mounts, MLflow env, cluster proxy env, kube-rbac-proxy sidecar
+  injection with cluster TLS flags, probe timeouts, holds back updates to running notebooks
+- Validating notebooks-validation.opendatahub.io (CREATE/UPDATE):
+  denies hostNetwork/hostPID/hostIPC, hostPath, serviceAccountName != notebook name,
+  unsafe security contexts; denies removing opendatahub.io/mlflow-instance on running notebooks
+- Conversion: scaffold only, inactive (strategy None)
+
+----------------------------------------------------------------------------------------
+Crypto / FIPS
+----------------------------------------------------------------------------------------
+- Build: CGO_ENABLED=1 GOEXPERIMENT=strictfipsruntime -tags strictfipsruntime; dynamic linking
+- Runtime base: registry.redhat.io/ubi9/ubi-minimal-pqc (OpenSSL); UID 1001
+- TLS: cluster APIServer tlsSecurityProfile applied to webhook + metrics; fallback TLS 1.2 + Intermediate
+- Old profile legacy ciphers (CBC/3DES) honored if admin selects Old profile
+- Hermetic Konflux build (Hermeto gomod prefetch); x86_64, ppc64le, s390x, arm64; digest-pinned bases
+
+----------------------------------------------------------------------------------------
+Security Observations
+----------------------------------------------------------------------------------------
+1. Culler uses plaintext, unauthenticated HTTP to notebooks (80->8888); requires -ctrl-np to open 8888
+   to the whole shared controller namespace (code acknowledges over-broad peer).
+2. Auth is opt-in (notebooks.opendatahub.io/inject-auth); without it the notebook backend is unauthenticated
+   and HTTPRoute points directly at 8888.
+3. kube-rbac-proxy 8443 open to any source by NetworkPolicy; notebook egress allow-all.
+4. ODH controller can create/delete ClusterRoleBindings and bind the MLflow ClusterRole cluster-wide;
+   also holds cluster-wide Secret create/update.
+5. S3 credentials duplicated from DSPA secret into ds-pipeline-config in the same namespace.
+6. Single replica, no leader election, maxUnavailable 100% + fail-closed webhooks => brief Notebook
+   admission outage on every rollout.
+7. Upstream RBAC still grants networking.istio.io virtualservices * though unused.

@@ -1,0 +1,154 @@
+KUEUE-OPERATOR - SECURITY NETWORK DIAGRAM (RHOAI 3.7-ea.1)
+Source: architecture/rhoai-3.7-ea.1/kueue-operator.md
+Repository: https://github.com/openshift/kueue-operator @ fce2cbaf
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│  USERS (authenticated by kube-apiserver)                                │
+│                                                                         │
+│  [Cluster Admin / OLM]              [Data Scientist]                    │
+│   creates Kueue CR "cluster"         creates Job/PyTorchJob/RayJob/...  │
+│         │                            with kueue.x-k8s.io/queue-name     │
+│         │                            in ns labelled                     │
+│         │                            kueue.openshift.io/managed=true    │
+│         │ Port: 6443/TCP                    │                           │
+│         │ Protocol: HTTPS                   │                           │
+│         │ Encryption: TLS 1.2+              │                           │
+│         │ Auth: User token (RBAC)           │                           │
+│         ▼                                   ▼                           │
+├─────────────────────────────────────────────────────────────────────────┤
+│  CONTROL PLANE                                                          │
+│                                                                         │
+│  [kube-apiserver]  (ns: openshift-kube-apiserver)                       │
+│  - Port: 6443/TCP HTTPS, TLS 1.2+                                       │
+│  - Enforces RBAC for operator, operand, users                           │
+│         │                                                               │
+│         │ Admission callout                                             │
+│         │ Port: 443/TCP (Service) → 9443/TCP (pod)                      │
+│         │ Protocol: HTTPS                                               │
+│         │ Encryption: TLS (cert-manager self-signed, CA injected via    │
+│         │             cert-manager.io/inject-ca-from)                   │
+│         │ Auth: Kubernetes admission; NetworkPolicy                     │
+│         │       kueue-allow-ingress-webhook permits only                │
+│         │       openshift-kube-apiserver pods                           │
+│         │ failurePolicy: Fail (Mutating + Validating)                   │
+│         ▼                                                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│  NAMESPACE: openshift-kueue-operator   (NetworkPolicy kueue-deny-all:   │
+│             default deny ingress+egress for app.openshift.io/name=kueue)│
+│                                                                         │
+│  [openshift-kueue-operator]  Deployment, 2 replicas, leader election    │
+│  - ServiceAccount: openshift-kueue-operator                             │
+│  - Image: registry.redhat.io/kueue/kueue-rhel9-operator@sha256:8f9b41…  │
+│  - Port: 60000/TCP metrics (library-go controllercmd)                   │
+│  - Priority: system-cluster-critical; restricted securityContext        │
+│  - No Routes/Ingress created (Route clientset built but unused)         │
+│         │                                                               │
+│         │ Port: 6443/TCP  HTTPS  TLS 1.2+  Auth: SA token               │
+│         │ Applies: Issuer, Certificates, ConfigMap, RBAC, Services,     │
+│         │          CRDs, NetworkPolicies, webhooks, ServiceMonitor,     │
+│         │          operand Deployment                                   │
+│         ▼                                                               │
+│  [kueue-webhook-service]  ClusterIP 443/TCP → 9443                      │
+│  [kueue-controller-manager-metrics-service]  ClusterIP 8443/TCP → 8443  │
+│  [kueue-visibility-server]  ClusterIP 443/TCP → 8082  ** NO LISTENER ** │
+│         │                                                               │
+│         ▼                                                               │
+│  [kueue-controller-manager]  operand Deployment, 2 replicas             │
+│  - ServiceAccount: kueue-controller-manager                             │
+│  - Image: registry.redhat.io/kueue/kueue-rhel9@sha256:73390c…           │
+│  - 9443/TCP HTTPS webhook (cert kueue-webhook-server-cert)              │
+│  - 8443/TCP HTTPS metrics (cert metrics-server-cert; TokenReview+SAR)   │
+│  - 8081/TCP HTTP  /healthz, /readyz (plaintext, no auth)                │
+│  - 8082/TCP visibility API: DISABLED (VisibilityOnDemand=false)         │
+│  - readOnlyRootFilesystem forced; anti-affinity; maxUnavailable 1       │
+│         │                                                               │
+│         │ Port: 6443/TCP  HTTPS  TLS 1.2+  Auth: SA token               │
+│         │ Creates Workloads, patches/unsuspends jobs, updates Secrets   │
+│         ▼                                                               │
+│  (back to kube-apiserver)                                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│  PLATFORM SERVICES (in-cluster)                                         │
+│                                                                         │
+│  [cert-manager]  cert-manager.io/v1 - HARD DEPENDENCY                   │
+│  - Operator refuses to reconcile if Issuer API absent                   │
+│  - Writes TLS Secrets + injects CA via kube-apiserver 6443/TCP          │
+│                                                                         │
+│  [prometheus-k8s]  ns openshift-monitoring                              │
+│         │ Port: 8443/TCP                                                │
+│         │ Protocol: HTTPS                                               │
+│         │ Encryption: TLS (InsecureSkipVerify=false, serverName pinned  │
+│         │             to openshift-kueue-operator namespace)            │
+│         │ Auth: Bearer token (TokenReview + SubjectAccessReview,        │
+│         │       kueue-metrics-reader) + client cert (metrics-server-cert)│
+│         ▼                                                               │
+│  [kueue-controller-manager-metrics-service]                             │
+│                                                                         │
+│  [openshift-dns]  53/TCP+UDP DNS, no encryption                         │
+│  (NetworkPolicy kueue-allow-egress-cluster-dns)                         │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL (optional)                                                    │
+│                                                                         │
+│  [MultiKueue remote clusters]                                           │
+│  - Port: 6443/TCP (typical), HTTPS, TLS                                 │
+│  - Auth: kubeconfig Secret referenced by MultiKueueCluster              │
+│  - NOTE: egress NetworkPolicy only allows TCP 6443; remote API servers  │
+│          on other ports will be blocked                                 │
+└─────────────────────────────────────────────────────────────────────────┘
+
+NetworkPolicies (operator-managed):
+- kueue-deny-all                     operator+operand  Ingress+Egress  default deny
+- kueue-allow-egress-kube-apiserver  operator+operand  Egress          TCP 6443 to any destination
+- kueue-allow-egress-cluster-dns     operator+operand  Egress          openshift-dns dns/dns-tcp
+- kueue-allow-ingress-metrics        operator+operand  Ingress         port "metrics" from ANY source
+- kueue-allow-ingress-webhook        operand           Ingress         9443 from openshift-kube-apiserver only
+- kueue-allow-ingress-visibility     operand           Ingress         port "visibility" from ANY source (no listener)
+
+RBAC Summary:
+- ClusterRole: openshift-kueue-operator  (bound to SA openshift-kueue-operator)
+  - rbac.authorization.k8s.io: clusterroles, clusterrolebindings, roles, rolebindings
+      Verbs: bind, escalate, create, delete, deletecollection, get, list, patch, update, watch
+  - core: configmaps, events, pods, secrets, serviceaccounts, services  (full CRUD, cluster-wide)
+  - apps: deployments, replicasets (full CRUD)
+  - apiextensions.k8s.io: customresourcedefinitions (full CRUD)
+  - admissionregistration.k8s.io: mutating/validatingwebhookconfigurations (full CRUD)
+  - cert-manager.io: certificates, issuers (full CRUD)
+  - monitoring.coreos.com: servicemonitors
+  - kueue.openshift.io: kueues, kueues/finalizers, kueues/status
+  - coordination.k8s.io: leases
+  - config.openshift.io: apiservers, infrastructures (get, list, watch)
+- Role: openshift-kueue-operator-networking (ns openshift-kueue-operator): networkpolicies CRUD
+- ClusterRole: kueue-manager-role  (bound to SA kueue-controller-manager)
+  - core secrets: get, list, update, watch (cluster-wide)
+  - core pods: delete, get, list, patch, update, watch; podtemplates CRUD
+  - admissionregistration webhook configs: get, list, update, watch
+  - batch/jobset/kubeflow.org/ray.io/workload.codeflare.dev jobs: get, list, patch, update, watch
+  - kueue.x-k8s.io: clusterqueues, localqueues, workloads, cohorts, admissionchecks (CRUD)
+  - autoscaling.x-k8s.io provisioningrequests (CRUD)
+- ClusterRoles: kueue-metrics-auth-role / kueue-proxy-role (tokenreviews, subjectaccessreviews create)
+- ClusterRole: kueue-metrics-reader (/metrics get)
+- RoleBinding: kueue-visibility-server-auth-reader (kube-system, extension-apiserver-authentication-reader)
+- RoleBinding: prometheus-k8s (ns openshift-kueue-operator) → openshift-monitoring/prometheus-k8s
+- Editor/viewer ClusterRoles for Kueue + job CRDs; kueue-batch-admin/user aggregation roles (bundle)
+
+Secrets:
+- kueue-webhook-server-cert (kubernetes.io/tls) - webhook serving cert for kueue-webhook-service.<ns>.svc,
+  cert-manager Certificate webhook-cert from self-signed Issuer, auto-renewed, CA injected into webhooks
+- metrics-server-cert (kubernetes.io/tls) - metrics serving cert, also CA + client cert for ServiceMonitor,
+  cert-manager Certificate metrics-certs, auto-renewed
+- MultiKueueCluster kubeconfig Secrets (Opaque) - remote cluster credentials, admin-provisioned, no rotation
+
+Admission Control:
+- MutatingWebhookConfiguration / ValidatingWebhookConfiguration, failurePolicy: Fail
+- namespaceSelector: kueue.openshift.io/managed=true AND NotIn [kube-system, openshift-kueue-operator]
+- Filtered to frameworks in Kueue.spec.config.integrations.frameworks
+- RISK (inferred, not runtime-verified): Kueue-native webhooks (ClusterQueue, Workload, ResourceFlavor,
+  Cohort) likely always filtered out → no admission defaulting/validation for these kinds
+- RISK: getFrameworkForValidatingWebhook panics on unregistered webhook name
+
+Security Notes:
+- Operator SA holds bind/escalate on RBAC: compromise is cluster-significant
+- Operand SA can update Secrets cluster-wide and patch every supported job kind
+- Bundled apiservice.yaml sets insecureSkipTLSVerify: true (NOT applied; visibility API disabled)
+- CSV tls-profiles: "false" - cluster TLS security profile not honored
+- FIPS: -tags strictfipsruntime, openshift-golang-builder, CSV fips-compliant: "true"
+- Opt-in label kueue.openshift.io/managed differs from kueue.x-k8s.io/managed referenced in overlay 0007

@@ -1,0 +1,169 @@
+llm-d-deployer — Security Network Diagram (RHOAI 3.7 EA1)
+Source: architecture/rhoai-3.7-ea.1/llm-d-deployer.md
+STATUS: Deprecated upstream (2025-07-25). Historical reference / deployment
+template only. NOT a RHOAI runtime component (no Konflux build, no RHOAI
+manifests). RHOAI deploys llm-d via KServe LLMInferenceService.
+Defaults below are "quickstart grade" and NOT production-hardened.
+
+┌──────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                    │
+│                                                                          │
+│  [Client — OpenAI-compatible API]        [Cluster user / Helm]           │
+│         │                                        │                       │
+│         │ Port: 80/TCP (443 if ingress.tls)      │ Port: 6443/TCP        │
+│         │ Protocol: HTTP (HTTPS optional)        │ Protocol: HTTPS       │
+│         │ Encryption: None by default            │ Encryption: TLS 1.2+  │
+│         │ Auth: NONE                             │ Auth: User RBAC       │
+│         ▼                                        ▼  (kube-apiserver)     │
+├──────────────────────────────────────────────────────────────────────────┤
+│  INGRESS                                                                 │
+│                                                                          │
+│  [k8s Ingress <gateway-fullname>]  (optional)                            │
+│  - Host: <release>.<clusterRouterBase> or ingress.host                   │
+│  - Created only when gateway.serviceType=NodePort; disabled on OpenShift │
+│  - TLS: Edge only if ingress.tls.enabled (default false)                 │
+│         │                                                                │
+│         │ Port: 80/TCP  Protocol: HTTP  Encryption: None  Auth: None     │
+│         ▼                                                                │
+│  [Inference Gateway — Envoy]  (Gateway API Gateway)                      │
+│  - GatewayClass: istio (default) | kgateway v2.0.3 | gke-l7-*            │
+│  - Listener: "default" HTTP :80 path "/"                                 │
+│  - Service: NodePort (Istio: ClusterIP via annotation)                   │
+│  - Label: istio.io/enable-inference-extproc: "true"                      │
+│  - HTTPRoute <model> → InferencePool (v1alpha2), timeouts 0s (unbounded) │
+│  - AuthN/AuthZ: NONE                                                     │
+│         │                                     │                          │
+│         │ Port: 9002/TCP                      │ Port: 8000/TCP           │
+│         │ Protocol: gRPC (ext_proc v3)        │ Protocol: HTTP           │
+│         │ Encryption: TLS SIMPLE              │ Encryption: None         │
+│         │   insecureSkipVerify: true          │ Auth: None               │
+│         │   (Istio DestinationRule)           │                          │
+│         │ Auth: None                          │                          │
+│         ▼                                     ▼                          │
+├──────────────────────────────────────────────────────────────────────────┤
+│  CLUSTER INTERNAL (No NetworkPolicy; any pod can reach any port)         │
+│                                                                          │
+│  Namespace: <ModelService ns>                                            │
+│  [Endpoint Picker (EPP)]                                                 │
+│  - Image: ghcr.io/llm-d/llm-d-inference-scheduler:v0.1.0                 │
+│  - ServiceAccount: <model>-epp-sa (controller-generated)                 │
+│  - Service <model>-epp-service: NodePort 9002 / 9003 / 9090              │
+│      9002 gRPC ext_proc | 9003 gRPC health (no TLS) | 9090 metrics       │
+│  - Scorers: prefix (w=2), load (w=1); KV-cache/session/PD off            │
+│  - Env HF_TOKEN from Secret llm-d-hf-token (HACK, tokenizer download)    │
+│         │                                                                │
+│         │ Port: 8100/TCP  Protocol: RESP  Encryption: None  Auth: None   │
+│         ▼                                                                │
+│  Namespace: <release ns>                                                 │
+│  [Redis master <release>-redis-master]                                   │
+│  - Image: quay.io/sclorg/redis-7-c9s:c9s (Bitnami chart 20.13.4)         │
+│  - Port: 8100/TCP → 6379                                                 │
+│  - auth.enabled: false; NetworkPolicy disabled; no persistence           │
+│  - Shared by every ModelService in the release (KV index + LMCache)      │
+│                                                                          │
+│  [Decode pod — headless Service, ports vllm 8000 / nixl 5557]            │
+│  - Routing sidecar ghcr.io/llm-d/llm-d-routing-sidecar:0.0.7             │
+│      native sidecar on 8000/TCP, --connector=nixlv2                      │
+│         │ Port: 8001/TCP (localhost) HTTP, no TLS, no auth               │
+│         ▼                                                                │
+│  - vLLM ghcr.io/llm-d/llm-d:0.0.8 on 8001/TCP                            │
+│         │                                                                │
+│  Routing sidecar ──► Prefill vLLM                                        │
+│         │ Port: 8000/TCP  Protocol: HTTP  Encryption: None  Auth: None   │
+│         ▼                                                                │
+│  [Prefill pod — headless Service, ports vllm 8000 / nixl 5557]           │
+│  - vLLM ghcr.io/llm-d/llm-d:0.0.8 on 8000/TCP                            │
+│                                                                          │
+│  Prefill vLLM ◄──► Decode vLLM (KV cache transfer)                       │
+│         Port: 5557/TCP (NIXL side channel) + UCX (UCX_TLS=^cuda_ipc)     │
+│         Protocol: TCP / RDMA   Encryption: None   Auth: None             │
+│  Decode/Prefill ──► Redis 8100/TCP (LMCache lookup) plaintext, no auth   │
+│                                                                          │
+│  Namespace: <release ns>                                                 │
+│  [modelservice controller]                                               │
+│  - Image: ghcr.io/llm-d/llm-d-model-service:v0.0.15                      │
+│  - ServiceAccount: <modelservice SA>                                     │
+│  - Probes 8081/TCP HTTP; Service <release>-modelservice 8443/TCP         │
+│  - runAsNonRoot, seccomp RuntimeDefault, drop ALL; leader-elect false    │
+│         │                                                                │
+│         │ Port: 6443/TCP  Protocol: HTTPS  Encryption: TLS 1.2+          │
+│         │ Auth: SA token                                                 │
+│         ▼                                                                │
+│  [kube-apiserver]                                                        │
+│                                                                          │
+│  Metrics:                                                                │
+│  [Prometheus (OpenShift UWM or kube-prometheus-stack)]                   │
+│    ──► vLLM /metrics 8000/TCP  HTTP, no TLS, no auth (15s)               │
+│    ──► EPP  /metrics 9090/TCP  HTTP, Bearer epp-metrics-scrape SA token  │
+│                                                                          │
+│  Namespace: llm-d-observability (Grafana quickstart, OpenShift)          │
+│  [Grafana]  — via OpenShift Route grafana-route 443/TCP HTTPS edge TLS   │
+│  - Local login admin/admin (hardcoded)                                   │
+│    ──► thanos-querier.openshift-monitoring.svc 9091/TCP HTTPS            │
+│        tlsSkipVerify: true, Bearer grafana-sa-token                      │
+│         │                                                                │
+│         │ Port: 443/TCP  Protocol: HTTPS  Encryption: TLS                │
+│         ▼                                                                │
+├──────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES (Egress)                                              │
+│                                                                          │
+│  [huggingface.co]          443/TCP HTTPS TLS, Bearer HF_TOKEN            │
+│     model + tokenizer download (vLLM, EPP, download-model Job)           │
+│  [ghcr.io, quay.io, gcr.io/istio-testing, cr.kgateway.dev]               │
+│                            443/TCP HTTPS TLS, optional pull secrets      │
+│  [charts.bitnami.com, prometheus-community.github.io]  443/TCP (installer)│
+│  [github.com — llm-d-inference-scheduler kustomize CRDs] 443/TCP         │
+│  [PyPI — download-model Job python:3.10 pip install]    443/TCP          │
+└──────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- ClusterRole <fullname>-manager  (bound to <modelservice SA>, cluster-wide)
+  - core: configmaps, serviceaccounts — create, delete, get, list, patch, update, watch
+  - core: pods — get, list, watch
+  - core: services — create, delete, list, patch, update, watch
+  - apps: deployments — create, delete, get, list, patch, update, watch
+  - apps: deployments/scale — patch, update
+  - discovery.k8s.io: endpointslices — get, list, watch
+  - gateway.networking.k8s.io: httproutes — create, delete, get, list, patch, update, watch
+  - inference.networking.x-k8s.io: inferencemodels, inferencepools — full CRUD + watch
+  - llm-d.ai: modelservices — full CRUD + watch; /finalizers update; /status get, patch, update
+  - rbac.authorization.k8s.io: rolebindings — create, delete, get, list, patch, update, watch
+  !! Privilege-escalation path: can create SAs + RoleBindings in any namespace
+- ClusterRole <fullname>-endpoint-picker  (bound to modelservice SA, and per-model EPP SA via RoleBinding)
+  - inference.networking.x-k8s.io: inferencepools, inferencemodels — get, watch, list
+  - core/discovery.k8s.io: pods, endpointslices — get, watch, list
+  - tokenreviews, subjectaccessreviews — create
+- ClusterRole <fullname>-metrics-auth — tokenreviews, subjectaccessreviews: create
+- ClusterRole <fullname>-epp-metrics-scrape  (bound to <SA>-epp-metrics-scrape, <model>-epp-sa)
+  - pods: get, watch, list; TokenReview/SAR create; nonResourceURL /metrics: get
+- Role <fullname>-leader-election (release ns): services, events, leases
+- User-facing ClusterRoles: <fullname>-admin (*), -editor (CRUD), -viewer (read) on modelservices
+- Grafana quickstart (grafana-sa, grafana-sa-token): ClusterRoleBindings to view,
+  cluster-monitoring-view, openshift-cluster-monitoring-view, grafana-prometheus-reader
+
+Service Mesh / Gateway Configuration:
+- Istio DestinationRule (sample app) → EPP: tls.mode SIMPLE, insecureSkipVerify: true
+- No PeerAuthentication / AuthorizationPolicy defined
+- kgateway GatewayParameters: Envoy + SDS read-only root FS; proxy UID from
+  openshift.io/sa.scc.uid-range + 1 (installer)
+- No NetworkPolicy anywhere (Redis NetworkPolicy explicitly disabled)
+
+Secrets:
+- llm-d-hf-token (Opaque, key HF_TOKEN) — HF token for vLLM, EPP, download Job;
+  created by llmd-installer.sh from $HF_TOKEN; no rotation
+- <SA>-epp-metrics-scrape-token (kubernetes.io/service-account-token) — legacy
+  long-lived token for EPP ServiceMonitor; no rotation
+- llm-d-redis (Opaque, key redis-password) — only if redis.auth.enabled (default off)
+- grafana-sa-token (kubernetes.io/service-account-token) — Grafana → Thanos; legacy long-lived
+- ingress.tls.secretName (kubernetes.io/tls) — optional manual Ingress TLS
+
+Key Security Findings (quickstart defaults):
+1. Inference endpoint is plain HTTP :80 with no authentication.
+2. Envoy → EPP TLS without certificate verification.
+3. Redis KV index unauthenticated, unencrypted, no NetworkPolicy; EPP Service is NodePort.
+4. NIXL/UCX KV transfer between prefill and decode is unencrypted.
+5. global.security.allowInsecureImages: true; community images with mutable tags,
+   imagePullPolicy Always, curl/curl:latest test image.
+6. Grafana admin/admin hardcoded; Thanos datasource tlsSkipVerify: true.
+7. Controller ClusterRole can create rolebindings/serviceaccounts cluster-wide.
+8. No FIPS signals; repo builds no images; no Konflux / hermetic build.

@@ -1,0 +1,136 @@
+mlflow-operator - Security Network Diagram (RHOAI 3.7-ea.1)
+Source: architecture/rhoai-3.7-ea.1/mlflow-operator.md (commit 41eaac6, MLflow v3.17.0)
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                       │
+│                                                                             │
+│  [Client / MLflow SDK / Browser]                                            │
+│         │                                                                   │
+│         │ Port: 443/TCP                                                     │
+│         │ Protocol: HTTPS                                                   │
+│         │ Encryption: TLS (Gateway listener)                                │
+│         │ Auth: Bearer token (OpenShift user/SA token)                      │
+│         ▼                                                                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  INGRESS - namespace openshift-ingress                                      │
+│                                                                             │
+│  [data-science-gateway]  (Gateway API)                                      │
+│  - HTTPRoute "mlflow": PathPrefix /mlflow  → svc mlflow:8443                │
+│  - HTTPRoute "mlflow-artifacts" (optional): /mlflow-artifacts + legacy      │
+│    artifact-proxy paths with URLRewrite → svc mlflow-artifacts:8443         │
+│  - TLS terminated at Gateway, re-encrypted to backend                       │
+│         │                                                                   │
+│         │ Port: 8443/TCP                                                    │
+│         │ Protocol: HTTPS                                                   │
+│         │ Encryption: TLS (service-ca cert mlflow-tls / mlflow-artifacts-tls)│
+│         │ Auth: Bearer token forwarded                                      │
+│         ▼                                                                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  CLUSTER INTERNAL - namespace redhat-ods-applications                       │
+│                                                                             │
+│  [mlflow tracking server]  (operand, upstream MLflow image)                 │
+│  - ServiceAccount: mlflow-sa                                                │
+│  - Listener: 8443/TCP HTTPS (uvicorn SSL)                                   │
+│  - AuthN/AuthZ: --app-name=kubernetes-auth,                                 │
+│    MLFLOW_K8S_AUTH_AUTHORIZATION_MODE=self_subject_access_review            │
+│  - Tenancy: --enable-workspaces, --workspace-store-uri=kubernetes://        │
+│  - NetworkPolicy ingress: 8443 from ALL namespaces (namespaceSelector: {})  │
+│                                                                             │
+│  [mlflow-artifacts server]  (optional, spec.artifactsServer.enabled)        │
+│  - Listener: 8443/TCP HTTPS, same auth model                                │
+│         │                                                                   │
+│         ├── 6443/TCP HTTPS TLS ── Caller token ──► [kube-apiserver]         │
+│         │      SelfSubjectAccessReview; namespace/MLflowConfig/secret reads │
+│         │                                                                   │
+│         ├── 5432 / 3306 TCP SQL ── TLS per URI ── DB creds ──► [Metadata DB]│
+│         │                                                                   │
+│         └── 443/9000/8333/8334 TCP HTTPS/HTTP ── Storage creds ──► [Objects]│
+│                                                                             │
+│  [mlflow-operator controller-manager]                                       │
+│  - ServiceAccount: mlflow-operator-controller-manager                       │
+│  - Image: quay.io/rhoai/odh-mlflow-operator-rhel9                           │
+│  - 8081/TCP HTTP  /healthz, /readyz  - NO AUTH (probes)                     │
+│  - 8443/TCP HTTPS /metrics - TLS from cluster APIServer TLS profile         │
+│    (Intermediate fallback), Bearer TokenReview + SubjectAccessReview        │
+│  - Operator NetworkPolicy: metrics ingress from monitoring namespaces only  │
+│         │                                                                   │
+│         │ Port: 6443/TCP  Protocol: HTTPS  Encryption: TLS 1.2+             │
+│         │ Auth: ServiceAccount token                                        │
+│         ▼                                                                   │
+│  [kube-apiserver]  watch/CRUD, discovery, server-side apply                 │
+│                                                                             │
+│  [Prometheus (monitoring namespaces)]                                       │
+│  - → operator metrics svc 8443/TCP HTTPS, Bearer (TokenReview + SAR)        │
+│  - → mlflow operand via chart ServiceMonitor (insecureSkipVerify: true      │
+│      default when metrics.tlsConfig unset)                                  │
+│                                                                             │
+│  [Tenant namespaces: workbenches, pipelines, dashboard]                     │
+│  - → mlflow:8443 HTTPS directly (allowed by NetworkPolicy), Bearer token    │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                          │
+│                                                                             │
+│  [PostgreSQL 5432 / MySQL 3306]  metadata store (SQLite on PVC alternative) │
+│  - Auth: credentials in user Secret (backendStoreUriFrom etc.)              │
+│  - Encryption: per connection URI (optional TLS)                            │
+│                                                                             │
+│  [S3-compatible / cloud object storage]  artifacts (PVC file:// alternative)│
+│  - Ports: 443, 9000, 8333, 8334                                             │
+│  - Auth: cloud/S3 credentials; per-namespace mlflow-artifact-connection     │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+Operand NetworkPolicy Egress (chart default):
+- Open to ANY destination on 443, 6443, 8443, 5432, 3306, 9000, 8333, 8334/TCP
+
+Unauthenticated Surfaces:
+- Operator :8081 /healthz, /readyz (by design)
+
+RBAC Summary:
+- ClusterRole: manager-role  (SA mlflow-operator-controller-manager)
+  - mlflow.opendatahub.io mlflows (+status, finalizers): full CRUD
+  - components.platform.opendatahub.io mlflowoperators: get, list, watch, patch, update
+  - mlflow.kubeflow.org mlflowconfigs: get, list, watch; experiments: get, list, update
+  - gateway.networking.k8s.io httproutes, console.openshift.io consolelinks,
+    monitoring.coreos.com servicemonitors: full CRUD
+  - rbac.authorization.k8s.io clusterroles, clusterrolebindings, rolebindings:
+    CRUD + bind  (ESCALATION-SENSITIVE; mitigated by resourceNames scoping)
+  - core namespaces, pods, secrets: get, list, watch
+  - services.platform.opendatahub.io auths: get, list, watch
+- Role: manager-role (redhat-ods-applications): configmaps, PVCs, secrets, SAs,
+  services, deployments, cronjobs, jobs, networkpolicies: full CRUD
+- Role: leader-election-role: configmaps, leases, events
+- ClusterRole: metrics-auth-role: tokenreviews, subjectaccessreviews: create
+- ClusterRole: metrics-reader: nonResourceURL /metrics: get
+- ClusterRole: openshift-tls-profile-reader: config.openshift.io apiservers: read
+- ClusterRole: mlflow (operand, SA mlflow-sa): namespaces; secret
+  mlflow-artifact-connection (every namespace); mlflowconfigs: get, list, watch
+- ClusterRole: mlflow-gc (optional): namespaces, mlflowconfigs, experiments
+- Aggregate: mlflow-view / mlflow-edit / mlflow-integration on mlflow.kubeflow.org
+  virtual resources (experiments, registeredmodels, datasets, gateway*, mcpservers, skills)
+- RoleBindings odh-group-mlflow-view / -edit in each namespace labeled
+  opendatahub.io/global-mlflow-workspace → Auth CR allowedGroups / adminGroups
+
+Admission Control:
+- CEL XValidation on MLflow CRD: name must be "mlflow"; blocks SQLite + split
+  serving, multi-replica on RWO, MLFLOW_SERVER_DISABLE_SECURITY_MIDDLEWARE,
+  MLFLOW_SERVER_ENABLE_JOB_EXECUTION; storage access modes immutable
+- ValidatingAdmissionPolicy (Warn, failurePolicy Ignore): trace rollup schedule
+- No admission webhooks
+
+Service Mesh Configuration:
+- None (no Istio sidecars / PeerAuthentication); TLS is per-hop service-ca
+
+Secrets:
+- mlflow-operator-controller-manager-metrics-tls (kubernetes.io/tls) - service-ca, auto-rotate
+- mlflow-tls (kubernetes.io/tls) - tracking server TLS, service-ca, auto-rotate
+- mlflow-artifacts-tls (kubernetes.io/tls) - artifact server TLS, service-ca, auto-rotate
+- backend/registry/read-replica store URI Secrets (Opaque) - user provided, no rotation
+- mlflow-artifact-connection per namespace (Opaque) - user provided, no rotation
+
+FIPS:
+- Operator: CGO_ENABLED=1, GOEXPERIMENT=strictfipsruntime, ubi9 minimal-pqc base (OpenSSL)
+- Operand is the upstream Python MLflow image (outside this repo's FIPS scope)
+
+Multi-Tenancy Risks:
+- Single shared instance; tenant isolation enforced only in the MLflow runtime (SSAR)
+- Shared metadata DB and default artifact store; no per-tenant network segmentation
+- mlflow-sa can read mlflow-artifact-connection Secret in every namespace

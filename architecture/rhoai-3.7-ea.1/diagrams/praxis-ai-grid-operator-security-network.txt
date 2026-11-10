@@ -1,0 +1,174 @@
+praxis-ai-grid-operator (AI Grid Network) - Security Network Diagram
+Source: architecture/rhoai-3.7-ea.1/praxis-ai-grid-operator.md
+Version: aa675b36 (branch rhoai-3.7-ea.1, workspace 0.3.0) - Technical Preview
+Images: quay.io/rhoai/odh-praxis-ai-grid-operator-rhel9
+        quay.io/rhoai/odh-praxis-ai-grid-enrollment-rhel9
+        quay.io/rhoai/odh-praxis-ai-grid-gateway-rhel9
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  PEER SITES (other clusters, reachable via internal cloud LBs)               │
+│                                                                              │
+│  [Peer grid-operator]                        [Peer / provider gateway]       │
+│         │  ▲                                          ▲                      │
+│         │  │ Port: 7946/UDP (both directions)         │ Port: gateway-defined│
+│         │  │ Protocol: SWIM (foca) + CRDT deltas      │ Protocol: HTTPS      │
+│         │  │ Encryption: AES-256-GCM (shared key)     │ Encryption: mTLS     │
+│         │  │ Auth: mesh key; optional ECDSA P-256     │ Auth: site cert      │
+│         │  │   signed state (signedState: enforce)    │   (Grid CA) + peer   │
+│         │  │   origin pins NOT fully wired (#75)      │   identity trust     │
+│         │  │                                          │                      │
+│         │  │ Port: 9091/TCP (both directions)         │                      │
+│         │  │ Protocol: HTTPS GET /v1/site/signals     │                      │
+│         │  │ Encryption: mTLS (min TLS 1.2 OpenSSL)   │                      │
+│         │  │ Auth: peer cert chained to Grid CA +     │                      │
+│         │  │   declared fingerprint pins              │                      │
+│         ▼  │                                          │                      │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  CLUSTER EDGE - Internal LoadBalancer Services (no Route/Ingress created)    │
+│                                                                              │
+│  [grid-operator-swim]     LoadBalancer (internal NLB on AWS/GCP/Azure)       │
+│  - 7946/UDP -> swim-udp, selector-less, publishNotReadyAddresses             │
+│  - Endpoints: EndpointSlice grid-operator-swim-holder (leader pod only)      │
+│                                                                              │
+│  [grid-operator-signals]  LoadBalancer (internal), externalTrafficPolicy:    │
+│  - 9091/TCP -> signals, selector-less              Local                     │
+│  - Endpoints: EndpointSlice grid-operator-signals-holder (leader pod only)   │
+│                                                                              │
+│  NetworkPolicy (OpenShift): SWIM and signals open to ALL sources that can    │
+│  reach the LB.                                                               │
+│         │                                                                    │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  NAMESPACE: grid-system (operator namespace, params.env "namespace")         │
+│                                                                              │
+│  [grid-operator]  Deployment, 1 replica, leader Lease "grid-operator"        │
+│  - ServiceAccount: grid-operator                                             │
+│  - Image: quay.io/rhoai/odh-praxis-ai-grid-operator-rhel9                    │
+│    (params.env default still ghcr.io/praxis-proxy/grid-operator:v0.3.0)      │
+│  - Runtime: ubi9/ubi-minimal-pqc, UID 65532, restricted securityContext      │
+│  - Crypto: rustls + ring, RustCrypto (default features, NOT fips)            │
+│  - No resource requests/limits                                               │
+│  - Listeners:                                                                │
+│      9090/TCP  HTTPS  /metrics /healthz /readyz  (no app auth;               │
+│                plaintext fallback if no TLS configured)                      │
+│      9091/TCP  HTTPS  /v1/site/signals  (mTLS + pins)                        │
+│      7946/UDP  SWIM   (held until mesh key loaded: GRID_SWIM_REQUIRE_KEY)    │
+│                                                                              │
+│  [grid-operator-metrics]  ClusterIP 9090/TCP                                 │
+│  - TLS: service-ca Secret grid-operator-metrics-tls (OpenShift)              │
+│         or grid-site-identity (base)                                         │
+│  - NetworkPolicy: only monitoring namespaces + Helm test pod                 │
+│         ▲                                                                    │
+│         │ Port: 9090/TCP  Protocol: HTTPS  Encryption: TLS (service-ca)      │
+│         │ Auth: none (ServiceMonitor uses openshift-service-ca.crt)          │
+│  [Prometheus - openshift-monitoring / user-workload-monitoring]              │
+│                                                                              │
+│  [grid-enrollment] (optional, charts/grid-enrollment)                        │
+│  - Image: quay.io/rhoai/odh-praxis-ai-grid-enrollment-rhel9                  │
+│  - Features: sar,bootstrap (no fips)                                         │
+│  - Listener: 8443/TCP HTTPS (ClusterIP; exposure owned by deployer)          │
+│  - SA bound to system:auth-delegator                                         │
+│     Routes / Auth:                                                           │
+│       POST   /v1alpha1/enrollmenttokens        Bearer -> TokenReview + SAR   │
+│       DELETE /v1alpha1/enrollmenttokens/{id}   Bearer -> TokenReview + SAR   │
+│       POST   /v1alpha1/enrollments             one-time token (SHA-256 cmp)  │
+│       GET/DELETE /v1alpha1/enrollments/{site}  Bearer / client cert          │
+│       POST   /v1alpha1/rotations               mTLS client cert (Grid CA)    │
+│       GET    /healthz /readyz                  none                          │
+│         │                                                                    │
+│         │ Port: 5432/TCP  Protocol: Postgres  Encryption: TLS verify-full    │
+│         │ Auth: client cert (recommended; password via sqlx is non-FIPS)     │
+│         ▼                                                                    │
+│  [PostgreSQL - optional, may be shared with MaaS]                            │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  KUBERNETES CONTROL PLANE                                                    │
+│                                                                              │
+│  [Kubernetes API Server]  6443/TCP HTTPS TLS 1.2+                            │
+│   <- grid-operator   SA token (CRD watch, ConfigMaps, Secrets, Leases,       │
+│                      EndpointSlices, Events, Deployment patch)               │
+│   <- enrollment      SA token (TokenReview, SubjectAccessReview, Secrets)    │
+│   <- overlay-sync    SA token (watch overlay ConfigMap)                      │
+│   <- admins          user token (create CRs)                                 │
+│   Guardrails: ValidatingAdmissionPolicies (failurePolicy: Fail)              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  GATEWAY NAMESPACE (data plane; operator NOT in request path)                │
+│                                                                              │
+│  [overlay-sync sidecar] --watch ConfigMap--> validates SHA-256 envelope      │
+│         │ file write to shared emptyDir (atomic)                             │
+│         ▼                                                                    │
+│  [Praxis AI gateway / grid-gateway]                                          │
+│   <- Client: HTTPS, TLS, API key / JWT (gateway auth policy)                 │
+│   -> Remote provider gateway: HTTPS mTLS, site cert (Grid CA)                │
+│   -> Backend: HTTP/HTTPS, injected provider credential                       │
+│   -> grid-operator 9091/TCP mTLS (peer signals)                              │
+│   <- grid-operator: gateway probes / metrics (metrics-scraper SA token)      │
+│   grid-gateway image: CARGO_FEATURES empty -> aws-lc bundled                 │
+│                       (Dockerfile notes this fails check-payload)            │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  PROVIDERS / EXTERNAL                                                        │
+│                                                                              │
+│  [Inference providers / llm-d EPP]  provider-defined port, HTTP/HTTPS        │
+│   <- grid-operator: health, /metrics, /v1/models; credential Secret ref      │
+│  [MCP servers (AgentToolProvider)]  provider-defined, MCP Streamable HTTP    │
+│   <- grid-operator: tools/list discovery                                     │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary (ServiceAccount: grid-operator unless noted):
+- ClusterRole grid-operator-crd (ClusterRoleBinding)
+  - grid.praxis.fast: agenttoolproviders, gridnetworks, inferenceproviders
+      -> get, list, watch, patch
+  - grid.praxis.fast: gridsites -> get, list, watch, patch, create, update, delete
+  - grid.praxis.fast: */status (4 kinds) -> get, patch
+  - grid.praxis.fast: gridnetworks -> create
+- ClusterRole grid-operator-resources (RoleBinding in grid-system)
+  - core secrets -> get, create, patch
+  - core services (grid-gateway, grid-operator-swim, grid-operator-signals) -> get
+  - apps deployments (grid-gateway) -> get, patch
+  - events.k8s.io events -> create, patch
+  - core configmaps -> get, create, patch, update
+  - core configmaps (grid-operator-local-records) -> delete
+- Role grid-operator-leader-election (grid-system)
+  - coordination.k8s.io leases -> create; get, update (grid-operator)
+  - core pods -> get, list
+  - core services (grid-operator-signals, grid-operator-swim) -> get
+  - discovery.k8s.io endpointslices -> create, list, delete; get, update (*-holder)
+  - discovery.k8s.io endpointslices/restricted -> create
+- Role grid-operator-metrics-scraper-token (grid-system)
+  - core serviceaccounts/token (grid-operator-metrics-scraper) -> create
+- Role grid-operator-operator-config (grid-system)
+  - core configmaps (grid-operator-config) -> get, list, watch
+- ClusterRole grid-operator-metrics-scraper -> SA grid-operator-metrics-scraper
+  - nonResourceURL /metrics -> get (token minted by operator to scrape gateways)
+
+Admission Policies (ValidatingAdmissionPolicy, CEL, failurePolicy: Fail):
+- grid-operator-endpointslice-cleanup: operator SA may DELETE only
+  controller-managed EndpointSlices of grid-operator-signals / grid-operator-swim
+- grid-operator-protect-config: operator SA may never UPDATE grid-operator-config
+
+Service Mesh Configuration:
+- None. No Istio/PeerAuthentication. Transport security is application-level:
+  mTLS with Grid CA + fingerprint pins (signals, gateway-to-gateway),
+  AES-256-GCM shared key (SWIM).
+
+Secrets:
+- grid-operator-metrics-tls (kubernetes.io/tls) - metrics TLS, OpenShift
+  service-ca, auto-rotated (listener hot reload)
+- grid-site-identity (Opaque/TLS) - site P-256 cert+key: metrics TLS (base),
+  peer mTLS, gossip signing; enrollment / operator; rotated via /v1alpha1/rotations
+- grid-swim-key (Opaque) - shared AES-256-GCM mesh key; deployment owner; no rotation
+- Provider credential Secrets (Opaque) - backend API keys; referenced only
+  (name/namespace/key), never copied into overlays; no rotation
+- Enrollment CA / TLS (kubernetes.io/tls) - Grid CA signing material + serving
+  cert; bootstrap Job; CA rotation requires ENROLLMENT_CONFIRM_CA_ROTATION
+- Invite Secrets (Opaque) - SiteInvite material; enrollment
+
+Key Security Risks:
+1. Shipped Konflux images are NOT built with the fips feature (operator: rustls+ring;
+   enrollment: sar,bootstrap; gateway: aws-lc default, fails check-payload).
+2. Shared SWIM mesh key: any key holder can inject state; per-site origin pins
+   not fully wired (praxis-proxy/grid#75).
+3. 9090 metrics/health has no application auth (NetworkPolicy-only on OpenShift);
+   plaintext fallback if TLS is unconfigured.
+4. SWIM/signals LB ports open to any source that can reach the internal LB.
+5. Cluster-scoped CRDs; no tenant isolation (explicitly out of scope).
+6. Optional enrollment Postgres may be shared with MaaS.

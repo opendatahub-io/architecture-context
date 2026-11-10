@@ -1,0 +1,138 @@
+OpenVINO Model Server (OVMS) - Security Network Diagram
+RHOAI 3.7-ea.1 | image odh-openvino-model-server-rhel9:3.7.0-ea.1 | RPM openvino_model_server-2026.4.0-3.el9ai
+Source: architecture/rhoai-3.7-ea.1/openvino_model_server.md
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                         │
+│  [External Client]                                                      │
+│         │                                                               │
+│         │ Port: 443/TCP                                                 │
+│         │ Protocol: HTTPS                                               │
+│         │ Encryption: TLS (edge / reencrypt, per platform)              │
+│         │ Auth: Bearer token if platform auth is enabled                │
+│         ▼                                                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (Platform-managed; created by ODH Model Controller)            │
+│                                                                         │
+│  [OpenShift Route / Gateway HTTPRoute]                                  │
+│  - Port: 443/TCP (external) → 80/TCP Service → 8888/TCP pod             │
+│  - TLS termination at the Route / Gateway                               │
+│  - Optional AuthN/AuthZ: kube-rbac-proxy / Authorino (overlays 0014/23) │
+│  - Only the REST port (8888 "rest") is declared; gRPC 8001 is NOT       │
+│    externally routable                                                  │
+│         │                                                               │
+│         │ Port: 80/TCP → 8888/TCP                                       │
+│         │ Protocol: HTTP                                                │
+│         │ Encryption: None (or platform proxy TLS)                      │
+│         │ Auth: Platform proxy (if enabled)                             │
+│         ▼                                                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│  IN-CLUSTER (plaintext; no TLS at OVMS)                                 │
+│                                                                         │
+│  [<isvc>-predictor Service] (KServe-created, RawDeployment)             │
+│  - Type: ClusterIP, 80/TCP → targetPort 8888 (rest)                     │
+│         │                                                               │
+│         ▼                                                               │
+│  [OVMS Pod]                                                             │
+│  - Namespace: {user InferenceService namespace}                         │
+│  - ServiceAccount: KServe default for the ISVC (no K8s API access)      │
+│  - Image: quay.io/rhoai/odh-openvino-model-server-rhel9 (CSV-pinned)    │
+│  - User: UID 5000, non-root; groups video(39), video1(44) for /dev/dri  │
+│  - Entrypoint: /ovms/bin/ovms (sanity check used /usr/bin/ovms)         │
+│                                                                         │
+│    REST listener  8888/TCP  HTTP (Drogon), no TLS                       │
+│      /v2/*  KServe v2 (health, metadata, infer) ....... no auth         │
+│      /v1/*  TFS v1 (predict/classify/regress, status) .. no auth        │
+│      /v1/config, /v1/config/reload (admin) ............ no auth         │
+│      /v3/models (list) ................................ no auth         │
+│      /v3/* chat/completions, completions, responses,                    │
+│            embeddings, rerank, images, audio .......... optional        │
+│            static Bearer API key (--api_key_file / API_KEY),            │
+│            non-constant-time string compare                             │
+│      /metrics (Prometheus, --metrics_enable) .......... no auth         │
+│      CORS: allowed origins / methods / headers default "*"              │
+│                                                                         │
+│    gRPC listener  8001/TCP  gRPC (HTTP/2), InsecureServerCredentials    │
+│      inference.GRPCInferenceService (KServe v2) ....... no auth         │
+│      tensorflow.serving.PredictionService ............. no auth         │
+│      tensorflow.serving.ModelService .................. no auth         │
+│      (ModelStreamInfer not implemented)                                 │
+│                                                                         │
+│  In-cluster callers:                                                    │
+│  [Prometheus UWM] ── 8888/TCP HTTP GET /metrics, no TLS, no auth ──►    │
+│  [gRPC clients]   ── 8001/TCP gRPC, no TLS, no auth ──►                 │
+│  [KServe clients] ── 8888/TCP HTTP, no TLS, no auth ──►                 │
+│                                                                         │
+│  [KServe storage initializer] (init container)                          │
+│  - Writes model artifacts to /mnt/models (emptyDir, shared volume)      │
+│         │                                                               │
+│         │ Port: 443/TCP                                                 │
+│         │ Protocol: HTTPS                                               │
+│         │ Encryption: TLS                                               │
+│         │ Auth: Data connection credentials (Secret)                    │
+│         ▼                                                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES (egress)                                             │
+│                                                                         │
+│  [S3 / S3-compatible (S3_ENDPOINT)]  443/TCP HTTPS, TLS (AWS SDK)       │
+│    Auth: AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_SESSION_TOKEN  │
+│    Purpose: s3:// model loads (OVMS direct, optional) or init container │
+│  [Google Cloud Storage]              443/TCP HTTPS, TLS                 │
+│    Auth: GOOGLE_APPLICATION_CREDENTIALS     Purpose: gs:// (optional)   │
+│  [Azure Blob / File]                 443/TCP HTTPS, TLS                 │
+│    Auth: Azure storage connection string    Purpose: az:// / azfs://    │
+│  [Hugging Face (HF_ENDPOINT, default huggingface.co)] 443/TCP HTTPS     │
+│    Auth: HF_TOKEN (optional)                Purpose: --pull download    │
+│  [Media URLs (--allowed_media_domains)] 443/TCP HTTP/HTTPS              │
+│    Auth: none                Purpose: VLM image inputs, allowlisted     │
+│                                                                         │
+│  Outbound TLS: cloud SDKs + curl/libgit2, default settings, system      │
+│  trust store; Python uses certifi >= 2026.10.19                         │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- None. OVMS does not call the Kubernetes API; the repository ships no
+  ClusterRoles, Roles or RoleBindings.
+- Deployment and Service creation is performed by the KServe controller
+  (its own RBAC, not part of this component).
+
+Service Mesh Configuration:
+- None defined by this component. No PeerAuthentication or
+  AuthorizationPolicy. Encryption and auth come from the platform
+  (KServe RawDeployment, ODH Model Controller Route/Gateway, optional
+  kube-rbac-proxy / Authorino).
+- No NetworkPolicy in repo; relies on platform NetworkPolicy.
+
+Secrets:
+- API_KEY / --api_key_file (env var / mounted file) - static Bearer token
+  for /v3 endpoints; user-provisioned; read once at startup, no rotation
+- AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN (env) - S3
+  model storage; KServe / data connection Secret; no rotation
+- GOOGLE_APPLICATION_CREDENTIALS (env → mounted file) - GCS; user; no rotation
+- HF_TOKEN (env) - Hugging Face pull; user; no rotation
+- OPENAI_API_KEY, GITHUB_TOKEN - demo / tooling scripts only, not the server
+
+FIPS / Crypto:
+- No compilation in Konflux; server is a prebuilt, dynamically linked RPM
+- OpenSSL from RHEL 9.8 AIPCC base (cpu-el9.8:3.6.0, digest-pinned)
+- RISK: legacy OpenSSL MD5() for config change detection
+  (src/filesystem/filesystem.hpp:263-280); may fail under a FIPS provider
+  in --config_path multi-model mode
+- RISK: API key compared with plain == (not constant-time)
+
+Build Hermeticity:
+- hermetic: true; Hermeto prefetch of rpm + pip
+- rpms.lock.yaml: 22 RPMs from cdn.redhat.com rhelai-3.6 (x86_64)
+- requirements.txt: hash-pinned, --require-hashes --only-binary --no-index
+- Single architecture: linux/amd64, CPU only (Intel GPU via OpenVINO plugin
+  only if RPMs provide it; NVIDIA/CUDA unsupported)
+
+Key Security Findings:
+1. No native TLS on either listener; all in-pod traffic is plaintext.
+2. KServe v2, TFS v1, gRPC, /metrics and /v1/config/reload are
+   unauthenticated; anything that can reach the pod can call them.
+3. CORS is permissive (*) by default.
+4. Overlay 0014 still says "not hermetic"; it is stale for this release.
+5. ENTRYPOINT /ovms/bin/ovms vs sanity check /usr/bin/ovms; verify the
+   RPM provides both paths.

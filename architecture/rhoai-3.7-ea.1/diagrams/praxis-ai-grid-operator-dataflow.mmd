@@ -1,0 +1,50 @@
+sequenceDiagram
+    participant Client as Inference Client
+    participant Admin as Admin / Grid-admin
+    participant K8s as Kubernetes API<br/>6443/TCP HTTPS
+    participant Op as grid-operator (leader)<br/>9090 HTTPS, 9091 mTLS, 7946/UDP
+    participant Prov as Provider backend / llm-d<br/>provider-defined
+    participant Peer as Peer site operator<br/>7946/UDP, 9091/TCP
+    participant Sync as overlay-sync sidecar
+    participant CGW as Consumer Praxis gateway
+    participant PGW as Provider gateway (remote site)
+    participant Backend as Private inference backend
+    participant Enr as grid-enrollment<br/>8443/TCP HTTPS
+    participant PG as PostgreSQL (optional)<br/>5432/TCP
+
+    Note over Admin,Sync: Flow 1 - Provider state publication and routing overlay delivery
+    Admin->>K8s: Create InferenceProvider / GridNetwork<br/>HTTPS TLS 1.2+, user token / RBAC
+    Op->>K8s: Watch CRDs<br/>HTTPS TLS 1.2+, SA token
+    Op->>Prov: Health, /metrics, /v1/models<br/>HTTP/HTTPS, credential Secret ref
+    Prov-->>Op: Health, metrics, model list
+    Op->>Peer: SWIM gossip + CRDT deltas<br/>7946/UDP AES-256-GCM, mesh key (+ optional P-256 signature)
+    Peer-->>Op: Membership + remote provider state
+    Op->>K8s: Write routing overlay ConfigMap<br/>digest + revision, SA token
+    Sync->>K8s: Watch overlay ConfigMap<br/>HTTPS TLS 1.2+, SA token
+    K8s-->>Sync: routing-overlay.json
+    Sync->>CGW: Validate envelope, atomic write to shared emptyDir (file)
+
+    Note over Op,Peer: Flow 3 - Signals exchange
+    Op->>Prov: Scrape /metrics<br/>credential ref / scraper SA token
+    Peer->>Op: GET /v1/site/signals via internal LB<br/>9091/TCP mTLS, Grid CA + fingerprint pins
+    Op-->>Peer: Provider signals (no credentials)
+
+    Note over CGW,Backend: Flow 2 - Cross-site inference request (operator not in path)
+    Client->>CGW: Inference request<br/>HTTPS TLS, API key / JWT
+    CGW->>PGW: Forward to selected provider gateway<br/>HTTPS mTLS, site cert (Grid CA)
+    PGW->>Backend: Request + injected provider credential<br/>HTTP/HTTPS backend-defined
+    Backend-->>PGW: Inference result
+    PGW-->>CGW: Response
+    CGW-->>Client: Response
+
+    Note over Admin,PG: Flow 4 - Site enrollment
+    Admin->>Enr: POST /v1alpha1/enrollmenttokens<br/>8443/TCP TLS, Bearer
+    Enr->>K8s: TokenReview + SubjectAccessReview<br/>grid.praxis.fast/enrollmenttokens, SA auth-delegator
+    K8s-->>Enr: Allowed
+    Enr-->>Admin: One-time site token
+    Op->>Enr: POST /v1alpha1/enrollments with CSR<br/>8443/TCP TLS, one-time token
+    Enr->>PG: Store enrollment<br/>TLS verify-full, client cert
+    Enr-->>Op: Signed site certificate
+    Op->>K8s: Write grid-site-identity Secret<br/>SA token
+    Op->>Enr: POST /v1alpha1/rotations (renewal)<br/>8443/TCP mTLS, Grid client cert
+    Enr-->>Op: Renewed certificate

@@ -1,0 +1,151 @@
+KUBEFLOW-SDK - SECURITY NETWORK DIAGRAM (RHOAI 3.7-ea.1)
+Source: architecture/rhoai-3.7-ea.1/kubeflow-sdk.md  |  SDK version 0.5.0 (commit 0ea4229)
+Deployment: Python client library (pip "kubeflow"). It deploys NO workload, Service, Ingress,
+RBAC or ServiceAccount. Every call runs as the CALLER's identity. The network surfaces below
+come from (a) the SDK process making outbound calls and (b) code that the SDK generates and
+injects into TrainJob pods.
+
+┌───────────────────────────────────────────────────────────────────────────────┐
+│  USER PROCESS (trust = caller identity)                                       │
+│                                                                               │
+│  [kubeflow SDK]  workbench pod (pod SA) or laptop (kubeconfig)                │
+│  - Listens on: nothing                                                        │
+│  - Auth source: load_kube_config() / load_incluster_config()                  │
+│  - Namespace: KubernetesBackendConfig.namespace | kube context | SA ns file   │
+│         │                                                                     │
+│         ├──► Kubernetes API server                                            │
+│         │      Port: 6443/TCP (or 443)   Protocol: HTTPS                       │
+│         │      Encryption: TLS (kubeconfig / in-cluster CA)                   │
+│         │      Auth: Bearer token / client cert -> kube-apiserver RBAC         │
+│         │      Purpose: CR CRUD (TrainJob, Experiment, SparkConnect,          │
+│         │               SparkApplication), pod logs, events, Secret keys,     │
+│         │               ConfigMap kubeflow-trainer-public                     │
+│         │                                                                     │
+│         ├──► Spark Connect server (in-cluster)                                │
+│         │      Port: 15002/TCP   Protocol: gRPC (sc://<svc>.<ns>.svc...)       │
+│         │      Encryption: NONE (plaintext)   Auth: NONE                       │
+│         │                                                                     │
+│         ├──► Spark Connect server (off-cluster)                               │
+│         │      kubectl port-forward -> API server -> pod:15002                │
+│         │      Local: sc://127.0.0.1:<15002-16002>                            │
+│         │      Encryption: TLS to API server (SPDY tunnel); plaintext gRPC    │
+│         │                  inside tunnel   Auth: kubeconfig (pods/portforward) │
+│         │                                                                     │
+│         ├──► Model Registry REST                                              │
+│         │      Port: 443/TCP (https) or 8080/TCP (http)                        │
+│         │      Encryption: TLS when https:// (optional custom_ca)             │
+│         │      Auth: Bearer user_token                                        │
+│         │                                                                     │
+│         ├──► KFP API (PipelinesClient)                                        │
+│         │      Port: deployment-specific   HTTPS / TLS   Auth: Bearer          │
+│         │                                                                     │
+│         ├──► S3-compatible storage (model upload)                             │
+│         │      Port: 443/TCP   HTTPS / TLS   Auth: S3 access keys              │
+│         │                                                                     │
+│         └──► Docker / Podman socket (container backend only)                  │
+│                Local Unix socket, HTTP, no TLS, OS permissions                │
+│                                                                               │
+├───────────────────────────────────────────────────────────────────────────────┤
+│  KUBERNETES CONTROL PLANE                                                     │
+│                                                                               │
+│  [kube-apiserver]  enforces caller's namespace RBAC (SDK adds nothing)        │
+│         │ creates TrainJob / Experiment / SparkConnect / SparkApplication     │
+│         ▼                                                                     │
+├───────────────────────────────────────────────────────────────────────────────┤
+│  PLATFORM OPERATORS                                                           │
+│                                                                               │
+│  [Kubeflow Trainer controller]  [Katib*]  [Spark Operator]                    │
+│   * Katib: per overlay 0012, not yet shipped in RHOAI                         │
+│         │                                                                     │
+│         │ Trainer controller polls injected metrics server                     │
+│         │   Port: 28080/TCP (metrics_port, 1024-65535)                         │
+│         │   Protocol: HTTP   Encryption: NONE   Auth: NONE                     │
+│         │   Trigger: annotations trainer.opendatahub.io/progression-tracking, │
+│         │            trainer.opendatahub.io/metrics-port                      │
+│         ▼                                                                     │
+├───────────────────────────────────────────────────────────────────────────────┤
+│  TENANT NAMESPACE (Data Science Project)                                      │
+│                                                                               │
+│  [TrainJob pod]  universal training image, runs as pod SA                     │
+│  - Executes SDK-serialized user Python function (remote code execution)       │
+│  - Injected metrics HTTP server: 0.0.0.0:28080, unauthenticated  (RISK)       │
+│  - vllm-sidecar (SpeculativeDecodingTrainer): localhost:8234, HTTP, loopback  │
+│         │                                                                     │
+│         ├──► Trainer controller status endpoint (KUBEFLOW_TRAINER_SERVER_URL) │
+│         │      Port: controller-defined   Protocol: HTTPS POST                 │
+│         │      Encryption: TLS (CA from KUBEFLOW_TRAINER_SERVER_CA_CERT,      │
+│         │                  else system trust)                                 │
+│         │      Auth: Bearer projected SA token (cached 300 s)                 │
+│         │      Limits: >=5 s between updates, <=256 metrics                    │
+│         │                                                                     │
+│         ├──► S3-compatible storage (checkpoints / outputs)                    │
+│         │      Port: 443/TCP   HTTPS   Encryption: TLS                         │
+│         │      (verify_cloud_storage_ssl=False disables verification) (RISK)  │
+│         │      Auth: S3 keys via secretKeyRef from Data Connection Secret     │
+│         │                                                                     │
+│         ├──► PyPI (default https://pypi.org/simple; DEFAULT_PIP_INDEX_URLS)   │
+│         │      Port: 443/TCP   HTTPS / TLS   Auth: none                        │
+│         │      Concern: disconnected clusters, supply chain                   │
+│         │                                                                     │
+│         └──► HuggingFace Hub                                                  │
+│                Port: 443/TCP   HTTPS / TLS   Auth: HF_TOKEN (optional)         │
+│                                                                               │
+│  [Spark Connect server pod + Service]  created by Spark Operator              │
+│  - 15002/TCP gRPC, plaintext, no auth                                  (RISK) │
+│                                                                               │
+├───────────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                            │
+│                                                                               │
+│  [PyPI]  [HuggingFace Hub]  [S3-compatible object storage]                    │
+└───────────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- The SDK ships no ClusterRole, Role, RoleBinding or ServiceAccount.
+- The caller (user or workbench SA) needs, for full functionality:
+  - trainer.kubeflow.org: trainjobs (create, get, list, watch, delete)
+                          trainingruntimes (get, list)
+                          clustertrainingruntimes (get, list; cluster scope)
+  - kubeflow.org:         experiments, trials
+  - sparkoperator.k8s.io: sparkconnects, sparkapplications
+  - core:                 pods, pods/log, events (get, list)
+                          secrets (get; RHAI Data Connections, key names only)
+                          configmaps (get; kubeflow-trainer-public in KUBEFLOW_SYSTEM_NAMESPACE,
+                                      cross-namespace, failure non-fatal)
+                          pods/portforward (off-cluster Spark Connect)
+- An over-privileged workbench SA grants the same privileges to SDK operations.
+
+Authentication & Authorization:
+- Kubernetes API (outbound, all verbs): kubeconfig / in-cluster SA token -> kube-apiserver RBAC
+- Trainer status endpoint (outbound POST): projected SA token + CA pinning -> Trainer controller
+- Injected metrics server (pod :28080, GET): NONE (relies on pod network / NetworkPolicy)
+- vLLM sidecar (pod localhost:8234): NONE, loopback binding only
+
+Service Mesh Configuration:
+- None defined by the SDK. No PeerAuthentication, AuthorizationPolicy or NetworkPolicy.
+  Network isolation of :28080 and :15002 depends on platform NetworkPolicy.
+
+Secrets:
+- Data Connection Secret (Opaque, user-named): S3 credentials. SDK reads key names only and
+  injects secretKeyRef env vars; values are never copied into the CR. Provisioned by
+  Dashboard/user. No auto-rotate.
+- Projected SA token (KUBEFLOW_TRAINER_SERVER_TOKEN path): Bearer for TrainJob status
+  updates, cached 300 s. Kubelet projection, auto-rotated.
+- HF_TOKEN (env var): HuggingFace gated model/dataset access. User supplied. No rotation.
+- Initializer access_token: HF token on dataset/model initializer types. User supplied.
+- Model Registry user_token: Bearer for Model Registry (often workbench SA token).
+
+Crypto / FIPS:
+- TLS via Python stdlib ssl (requests/urllib3, kubernetes client) with default settings:
+  no pinned min/max TLS version or cipher list.
+- No direct crypto imports. FIPS posture is inherited from the consuming image's
+  Python/OpenSSL (workbench or universal training image). No OLM FIPS annotation.
+- Hermeticity: uv.lock + hash-pinned requirements.txt (2,267 sha256 hashes). The wheel is
+  rebuilt downstream in the AIPCC index pipeline.
+
+Key Risks for SAR:
+1. Unauthenticated plaintext metrics server bound to 0.0.0.0:28080 in training pods.
+2. Plaintext, unauthenticated Spark Connect gRPC on 15002 (in-cluster path).
+3. Remote code execution model: user Python is serialized and runs under the pod SA.
+4. Default runtime pip install from public PyPI (air-gapped and supply-chain impact).
+5. verify_cloud_storage_ssl=False disables S3 certificate verification (logs a warning).
+6. Reading Data Connection key names requires 'get secrets' in the namespace.

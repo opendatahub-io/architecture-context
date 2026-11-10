@@ -1,0 +1,62 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted Internet)"]
+        HF["HuggingFace Hub<br/>huggingface.co / HF_ENDPOINT<br/>443/TCP HTTPS TLS 1.2+"]
+        NGC["NVIDIA NGC<br/>api.ngc.nvidia.com, authn.nvidia.com<br/>443/TCP HTTPS TLS 1.2+"]
+        S3["S3-compatible storage<br/>443/TCP HTTPS TLS 1.2+"]
+    end
+
+    subgraph Cluster["CLUSTER INTERNAL (no Route / Ingress / Gateway defined)"]
+        direction TB
+
+        subgraph ControlPlane["Kubernetes Control Plane"]
+            K8sAPI["Kubernetes API server<br/>443/TCP (6443) HTTPS TLS<br/>TokenReview / SAR"]
+            OCPConfig["apiservers.config.openshift.io/cluster"]
+        end
+
+        subgraph NS_Monitoring["Namespaces: openshift-monitoring, openshift-user-workload-monitoring, redhat-ods-monitoring"]
+            Prom["Prometheus"]
+        end
+
+        subgraph NS_Operator["Namespace: ODH apps ns / modelexpress-operator-system"]
+            Operator["modelexpress-operator<br/>SA: modelexpress-operator<br/>:8081 /healthz /readyz (HTTP, no auth)<br/>:8443 /metrics (TLS service-ca,<br/>TokenReview + SAR)<br/>NetworkPolicy: ingress from monitoring ns only"]
+        end
+
+        subgraph NS_Tenant["Namespace: CR namespace (per ModelExpressServer)"]
+            Server["modelexpress-server<br/>SA: &lt;cr&gt;-server<br/>Image: odh-modelexpress-rhel9<br/>UID 65532<br/>:8001 gRPC, optional TLS ≥1.2<br/>:9401 /metrics HTTP, NO auth<br/>:15008 HBONE"]
+            PVC["Cache PVC<br/>(optional)"]
+            NP["NetworkPolicy<br/>ingress open unless allowFrom set<br/>egress: allow all"]
+            Clients["Inference pods<br/>vLLM / SGLang / TRT-LLM / Dynamo / llm-d<br/>(MX client)"]
+        end
+
+        Redis["Redis (user-supplied, optional)<br/>6379/TCP RESP<br/>optional TLS rediss://"]
+    end
+
+    %% Control flows
+    Operator -->|HTTPS/443<br/>TLS OpenSSL<br/>SA token<br/>watch + SSA| K8sAPI
+    Operator -->|HTTPS/443<br/>read TLS profile| OCPConfig
+    Prom -->|HTTPS/8443<br/>TLS service-ca<br/>Bearer → TokenReview + SAR| Operator
+    Prom -.->|HTTP/9401<br/>plaintext<br/>NO auth| Server
+
+    %% Data plane
+    Clients -->|gRPC/8001<br/>optional TLS ≥1.2<br/>Bearer SA token if mode=enforce<br/>NONE by default| Server
+    Server -->|HTTPS/443<br/>TLS<br/>server SA: TokenReview,<br/>CRD + ConfigMap backend| K8sAPI
+    Server -.->|RESP/6379<br/>optional TLS<br/>URL-embedded password| Redis
+    Server -->|filesystem| PVC
+    Clients -.->|NIXL RDMA IB/RoCE/EFA<br/>NOT TLS<br/>no MX auth| Clients
+
+    %% Egress
+    Server -->|HTTPS/443<br/>TLS 1.2+<br/>HF_TOKEN Bearer| HF
+    Server -->|HTTPS/443<br/>TLS 1.2+<br/>NGC API key → token| NGC
+    Server -->|HTTPS/443<br/>TLS 1.2+<br/>AWS SigV4| S3
+
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef control fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef operator fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef tenant fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef risk fill:#f8cecc,stroke:#b85450,stroke-width:2px
+
+    class HF,NGC,S3 external
+    class K8sAPI,OCPConfig control
+    class Operator,Prom operator
+    class Server,PVC,Clients,Redis tenant
+    class NP risk

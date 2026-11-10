@@ -1,0 +1,132 @@
+praxis-ai - Security Network Diagram (RHOAI 3.7-ea.1)
+Source: architecture/rhoai-3.7-ea.1/praxis-ai.md (praxis-proxy/ai @ 50d57800, v0.10.0)
+NOTE: The repo ships NO Kubernetes manifests (no Service, Route, NetworkPolicy, RBAC).
+      Exposure, Service type, and bind addresses come from whoever deploys it
+      (operator, Helm chart or llm-d). Default config binds 127.0.0.1 for both ports.
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL / UNTRUSTED                                                        │
+│                                                                              │
+│  [Client]  (OpenAI Chat/Responses, Anthropic Messages, MCP JSON-RPC, A2A)    │
+│      │                                                                       │
+│      │ Port: 443/TCP (consumer-defined)                                      │
+│      │ Protocol: HTTPS                                                       │
+│      │ Auth: platform authN (token / OIDC), not praxis-ai                    │
+│      ▼                                                                       │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  INGRESS / AUTHN (consumer-defined: Gateway, kube-rbac-proxy, ...)           │
+│                                                                              │
+│  [Trusted Upstream Authenticator]                                            │
+│  - Asserts identity headers: x-auth-tenant, x-auth-user                      │
+│      │                                                                       │
+│      │ Port: 8080/TCP                                                        │
+│      │ Protocol: HTTP/HTTPS (HTTP/1.1, HTTP/2)                               │
+│      │ Encryption: optional listener TLS 1.2 (EMS required) / TLS 1.3        │
+│      │             mTLS + SPIFFE peer identity required on provider routes   │
+│      │ Auth: trusted x-auth-* headers / mTLS / optional basic_auth (exp.)    │
+│      ▼                                                                       │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  PRAXIS-AI POD                                                               │
+│                                                                              │
+│  [praxis-ai proxy listener]  8080/TCP                                        │
+│  - Image: ghcr.io/praxis-proxy/ai:<tag> | <tag>-experimental | <tag>-fips    │
+│  - Runs non-root (FIPS image UID 1001)                                       │
+│  - Filter chain (YAML, hot-reloadable):                                      │
+│      peer_identity_trust (first on provider routes) → identity_header_guard  │
+│      → state_owner (consumes + strips x-auth-*) → guardrails → rate limit    │
+│      → model_to_header / llmisvc_model_provider_resolver → translators       │
+│      → credential_inject / cloud auth → router / load_balancer               │
+│                                                                              │
+│  [praxis-ai admin]  9901/TCP                                                 │
+│  - HTTP, NO TLS, NO AUTH: /healthy (liveness), /ready (incl. store gate),    │
+│    /metrics (Prometheus: token usage, TTFT)                                  │
+│  - Default bind 127.0.0.1; deployer must keep it cluster-internal            │
+│      │                                                                       │
+├──────┼───────────────────────────────────────────────────────────────────────┤
+│      ▼   IN-CLUSTER PLATFORM SERVICES                                        │
+│                                                                              │
+│  → [KServe LLMInferenceService / vLLM]                                       │
+│      Port: configured | HTTP/HTTPS | optional TLS | injected credential/none │
+│  → [llm-d EPP]  (optional llmd-ext-proc feature)                             │
+│      Port: configured (e.g. 3001) | gRPC Envoy ext_proc full-duplex          │
+│      Encryption: optional TLS | Auth: NONE                                   │
+│  → [Selected model-server pod] (x-gateway-destination-endpoint)              │
+│      Port: configured | HTTP | optional TLS | Auth: NONE                     │
+│  → [OGX]  Port: configured | HTTP/HTTPS | TLS | projected identity headers   │
+│  → [PostgreSQL]  5432/TCP | PostgreSQL wire | TLS (verified sslmode)         │
+│      Auth: client certificate (FIPS cert-only profile) or password           │
+│      (SQLite alternative: local file)                                        │
+│  → [Valkey / Redis Sentinel]  configured | RESP | TLS (tokio-rustls)         │
+│  ← [Prometheus]  scrapes 9901/TCP | HTTP | plaintext | no auth               │
+│  → [OpenTelemetry collector]  OTLP | configured                              │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES (egress; SSRF-guarded callouts)                           │
+│                                                                              │
+│  [OpenAI / Anthropic]          443/TCP HTTPS TLS 1.2+ (EMS) | API key        │
+│  [AWS Bedrock]                 443/TCP HTTPS TLS 1.2+ | AWS SigV4            │
+│                                (HMAC-SHA256 via OpenSSL)                     │
+│  [Azure OpenAI / Entra ID]     443/TCP HTTPS TLS 1.2+ | client secret→bearer │
+│  [Vertex AI / oauth2.googleapis.com] 443/TCP HTTPS | GCP ADC RS256 assertion │
+│  [GCP metadata server]         80/TCP HTTP (only GCP ADC may reach metadata) │
+│  [Guardrails (NeMo, Lakera), metering, web/file search, MCP servers]         │
+│                                443/TCP HTTPS TLS 1.2+ | per-callout auth     │
+│                                                                              │
+│  Callout hardening: target resolved once; private/loopback/link-local        │
+│  rejected unless per-filter opt-in; cloud metadata always rejected (except   │
+│  GCP ADC); redirects not followed; URL userinfo rejected. Callouts use the   │
+│  shared Pingora SubRequestClient (same OpenSSL TLS provider).                │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+Endpoints:
+- 8080/TCP  /                         GET              static status (default config)
+- 8080/TCP  /v1/chat/completions      POST             Chat Completions gateway
+- 8080/TCP  /v1/messages              POST             Anthropic Messages gateway
+- 8080/TCP  /v1/responses             POST/GET/DELETE  Responses API (experimental image)
+- 8080/TCP  /v1/conversations/*       GET/POST/DELETE  Conversations API (experimental image)
+- 8080/TCP  MCP / A2A JSON-RPC paths  POST             tool-name / task routing
+- 9901/TCP  /healthy /ready /metrics  GET              admin, unauthenticated
+
+RBAC Summary:
+- Kubernetes RBAC: NONE. No ClusterRole/Role/Binding/ServiceAccount in repo;
+  praxis-ai does not call the Kubernetes API.
+- Application authZ:
+  - Provider-route chains: peer_identity_trust (mandatory first filter),
+    downstream mTLS + SPIFFE ID; startup rejects optional/plaintext cert modes.
+  - /v1/responses, /v1/conversations: state_owner + identity_header_guard;
+    store queries scoped by tenant_id + owner_issuer + owner_subject.
+  - Upstream credentials bound to the validated target origin.
+
+Trust Boundary Risk:
+- Identity is header-asserted. If untrusted clients can reach 8080 directly
+  (bypassing the authenticator), tenant/user identity can be forged.
+  NetworkPolicy is left to the deployer.
+
+Secrets (none defined in-repo; all consumer-supplied):
+- Upstream provider credentials  - mounted file, watched and hot-reloaded
+- Listener TLS cert/key (PEM)    - reloaded via config hot reload
+- PostgreSQL client cert / DATABASE_URL / PGPASSWORD - no rotation determined
+- GCP key file (GOOGLE_APPLICATION_CREDENTIALS) / Azure client secret
+                                 - tokens cached and refreshed
+- TOKEN_RATE_LIMIT_VALKEY_URL / TOKEN_RATE_LIMIT_SENTINEL_* (env)
+- Handling: secrecy / zeroize wrappers
+
+Crypto / FIPS:
+- TLS: rustls with a single OpenSSL-backed provider (praxis_tls::provider::install);
+  TLS 1.2 (EMS required) to TLS 1.3; ChaCha20 absent in FIPS mode.
+- Dynamic link to system libcrypto.so.3 / libssl.so.3 (openssl crate, not vendored).
+- FIPS image: UBI9 ubi-minimal + openssl-fips-provider-so, digest-pinned bases,
+  features limited to aws-sigv4-filter by default, cargo auditable SBOM,
+  check-payload scan (make fips-scan).
+- PRAXIS_REQUIRE_FIPS=1: fail closed unless provider, kernel and crypto policy
+  all report FIPS; the standard build refuses the variable outright.
+- Standard image (Alpine OpenSSL) is NOT FIPS; policy engine pulls aws-lc-rs,
+  SQLx uses sha2/md-5 (SCRAM).
+
+Service Mesh:
+- None in repo. mTLS is provided by Praxis listener TLS + SPIFFE peer identity.
+
+Supply Chain:
+- SQLx pinned to temporary fork praxis-proxy/sqlx@637e7025.
+- No Konflux Dockerfile, RPM lockfile or Hermeto config on this branch.
+- Cargo.lock present; FIPS build uses --locked.
