@@ -62,6 +62,18 @@ class TestSummarizeCloneError:
     def test_noise_only_stderr(self):
         assert _summarize_clone_error("Cloning into 'repo'...\n\n") is None
 
+    def test_host_key_warning_does_not_hide_auth_error(self):
+        stderr = (
+            b"Warning: Permanently added 'github.com' (ED25519) to the "
+            b"list of known hosts.\n"
+            b"git@github.com: Permission denied (publickey).\n"
+            b"fatal: Could not read from remote repository.\n"
+        )
+        assert (
+            _summarize_clone_error(stderr.decode())
+            == "git@github.com: Permission denied (publickey)."
+        )
+
 
 def _failed_proc(stderr: bytes, returncode: int = 128) -> AsyncMock:
     proc = AsyncMock()
@@ -77,10 +89,10 @@ class TestCloneRepoFailureMessages:
             self.mock_log = mock_log
             yield
 
-    async def _run(self, proc, branch="main"):
+    async def _run(self, checkouts_dir, proc, branch="main"):
         with patch("asyncio.create_subprocess_exec", return_value=proc):
             await _clone_repo(
-                Path("/tmp/checkouts-unused"),
+                checkouts_dir,
                 "red-hat-data-services",
                 "rhods-devops-infra",
                 branch=branch,
@@ -88,21 +100,25 @@ class TestCloneRepoFailureMessages:
                 protocol="ssh",
             )
 
+    @pytest.fixture
+    def checkouts(self, tmp_path):
+        return tmp_path / "checkouts"
+
     @pytest.mark.asyncio
-    async def test_missing_branch_keeps_skip_wording(self):
+    async def test_missing_branch_keeps_skip_wording(self, checkouts):
         stderr = b"fatal: Remote branch main not found in upstream origin\n"
-        await self._run(_failed_proc(stderr))
+        await self._run(checkouts, _failed_proc(stderr))
         msg = self.mock_log.call_args[0][0]
         assert "branch 'main' not found" in msg
         assert "clone failed" not in msg
 
     @pytest.mark.asyncio
-    async def test_host_key_failure_reports_real_reason(self):
+    async def test_host_key_failure_reports_real_reason(self, checkouts):
         stderr = (
             b"Host key verification failed.\n"
             b"fatal: Could not read from remote repository.\n"
         )
-        await self._run(_failed_proc(stderr))
+        await self._run(checkouts, _failed_proc(stderr))
         msg = self.mock_log.call_args[0][0]
         assert "clone failed" in msg
         assert "Host key verification failed" in msg
@@ -110,20 +126,34 @@ class TestCloneRepoFailureMessages:
         assert "not found" not in msg
 
     @pytest.mark.asyncio
-    async def test_auth_failure_reports_real_reason(self):
+    async def test_auth_failure_reports_real_reason(self, checkouts):
         stderr = (
             b"git@github.com: Permission denied (publickey).\n"
             b"fatal: Could not read from remote repository.\n"
         )
-        await self._run(_failed_proc(stderr))
+        await self._run(checkouts, _failed_proc(stderr))
         msg = self.mock_log.call_args[0][0]
         assert "clone failed" in msg
         assert "Permission denied" in msg
         assert "not found" not in msg
 
     @pytest.mark.asyncio
-    async def test_no_stderr_reports_exit_code(self):
-        await self._run(_failed_proc(b""))
+    async def test_host_key_warning_does_not_hide_auth_error(self, checkouts):
+        stderr = (
+            b"Warning: Permanently added 'github.com' (ED25519) to the "
+            b"list of known hosts.\n"
+            b"git@github.com: Permission denied (publickey).\n"
+            b"fatal: Could not read from remote repository.\n"
+        )
+        await self._run(checkouts, _failed_proc(stderr))
+        msg = self.mock_log.call_args[0][0]
+        assert "clone failed" in msg
+        assert "Permission denied" in msg
+        assert "not found" not in msg
+
+    @pytest.mark.asyncio
+    async def test_no_stderr_reports_exit_code(self, checkouts):
+        await self._run(checkouts, _failed_proc(b""))
         msg = self.mock_log.call_args[0][0]
         assert "clone failed" in msg
         assert "git exited 128" in msg

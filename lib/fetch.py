@@ -490,12 +490,17 @@ async def _resolve_branch_glob(
 def _summarize_clone_error(stderr_text: str) -> str | None:
     """Extract the most informative line from failed git clone stderr.
 
-    Skips progress noise such as "Cloning into ..." so the logged reason
-    identifies the actual failure (missing branch, host key, auth, ...).
-    Returns None when stderr carries no usable detail.
+    Skips progress noise such as "Cloning into ..." and informational
+    host-key warnings (emitted with StrictHostKeyChecking=accept-new)
+    so the logged reason identifies the actual failure (missing branch,
+    host key, auth, ...). Returns None when stderr carries no usable
+    detail.
     """
     lines = [ln.strip() for ln in stderr_text.splitlines() if ln.strip()]
-    lines = [ln for ln in lines if not ln.startswith("Cloning into")]
+    lines = [
+        ln for ln in lines
+        if not ln.startswith(("Cloning into", "Warning: Permanently added"))
+    ]
     if not lines:
         return None
     for ln in lines:
