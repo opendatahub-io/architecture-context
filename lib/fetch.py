@@ -487,6 +487,28 @@ async def _resolve_branch_glob(
     return branches[-1]
 
 
+def _summarize_clone_error(stderr_text: str) -> str | None:
+    """Extract the most informative line from failed git clone stderr.
+
+    Skips progress noise such as "Cloning into ..." and informational
+    host-key warnings (emitted with StrictHostKeyChecking=accept-new)
+    so the logged reason identifies the actual failure (missing branch,
+    host key, auth, ...). Returns None when stderr carries no usable
+    detail.
+    """
+    lines = [ln.strip() for ln in stderr_text.splitlines() if ln.strip()]
+    lines = [
+        ln for ln in lines
+        if not ln.startswith(("Cloning into", "Warning: Permanently added"))
+    ]
+    if not lines:
+        return None
+    for ln in lines:
+        if "Remote branch" in ln and "not found" in ln:
+            return "branch not found on remote"
+    return lines[0]
+
+
 async def _clone_repo(
     checkouts_dir: Path,
     org: str,
@@ -595,18 +617,22 @@ async def _clone_repo(
 
     proc = await asyncio.create_subprocess_exec(
         *cmd,
-        stdout=None,
-        stderr=None,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
         env=env,
     )
 
-    returncode = await proc.wait()
+    _, stderr = await proc.communicate()
 
-    if returncode != 0:
-        if branch:
+    if proc.returncode != 0:
+        detail = _summarize_clone_error(stderr.decode(errors="replace"))
+        if detail == "branch not found on remote":
             _log(f"  Skipped {org}/{repo} (branch '{branch}' not found)")
+        elif detail:
+            _log(f"  Skipped {org}/{repo} (clone failed: {detail})")
         else:
-            _log(f"  Failed to clone {org}/{repo}")
+            _log(f"  Skipped {org}/{repo} (clone failed, git exited "
+                 f"{proc.returncode})")
     elif exclude_files:
         _apply_exclude_files(repo_path, exclude_files, repo)
 
