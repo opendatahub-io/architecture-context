@@ -21,6 +21,8 @@ provenance:
   - https://github.com/opendatahub-io/odh-dashboard/pull/9491
   - https://github.com/opendatahub-io/odh-dashboard/pull/9767
   - https://github.com/opendatahub-io/kube-rbac-proxy/pull/28
+  - https://github.com/opendatahub-io/feast-module-operator/pull/27
+  - https://github.com/opendatahub-io/opendatahub-operator/pull/4232
 author: Brian Gallagher
 superseded_by: null
 ---
@@ -61,10 +63,14 @@ The current architecture evidence is split by maturity:
   (`{type: rhai, secret_name: <name>}`). The registry stores the reference,
   not the underlying credentials. End-to-end runtime validation and released
   user-interface availability for both variants must be verified separately.
-- **[In review]** End-to-end DSC capability configuration, Data Registry
-  namespace provisioning, and shared operator lifecycle remain dependent on
-  the open Feast module-operator work. Treat those transitions as in review,
-  not as shipped platform behavior.
+- **[Merged]** The DSC configures Feature Store and Data Registry as independent
+  capabilities. The platform operator projects their management states to the
+  Feast module operator, which provisions and labels the dedicated
+  `rhoai-data-registry` namespace when Data Registry is enabled and defers
+  shared operator cleanup while either capability remains enabled
+  ([platform operator #4232](https://github.com/opendatahub-io/opendatahub-operator/pull/4232),
+  [Feast module operator #27](https://github.com/opendatahub-io/feast-module-operator/pull/27)).
+  Release availability remains specific to the target build.
 
 ## Impact on Strategies
 
